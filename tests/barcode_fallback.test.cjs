@@ -2,7 +2,6 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { test } = require('node:test');
 const vm = require('node:vm');
-const lookup = require('../public/product-lookup-core.js');
 
 const page = fs.readFileSync(require.resolve('../public/products.html'), 'utf8');
 const productScript = fs.readFileSync(require.resolve('../public/product-lookup.js'), 'utf8');
@@ -37,15 +36,20 @@ function openProductPage(mediaDevices) {
       decodeFromStream() { throw new Error('Unexpected barcode decoding'); }
     }
   };
-  vm.runInNewContext(productScript
-    .replace(/^import .*;\n/m, '')
-    .replace(/await import\('[^']+@zxing\/browser[^']*'\)/, 'scanner'), {
+  const context = vm.createContext({
     document,
     navigator: { mediaDevices },
-    window: { BasketPilotProductLookup: lookup, addEventListener() {} },
+    window: { addEventListener() {} },
     createClient: () => ({ auth: { onAuthStateChange() {} } }),
     scanner
   });
+  for (const [, script] of page.matchAll(/<script src="\/([\w-]+\.js)"><\/script>/g)) {
+    const source = fs.readFileSync(require.resolve('../public/' + script), 'utf8');
+    vm.runInContext(source, context, { filename: script });
+  }
+  vm.runInContext(productScript
+    .replace(/^import .*;\n/m, '')
+    .replace(/await import\('[^']+@zxing\/browser[^']*'\)/, 'scanner'), context, { filename: 'product-lookup.js' });
   return { $: document.getElementById, focused: () => focused };
 }
 
