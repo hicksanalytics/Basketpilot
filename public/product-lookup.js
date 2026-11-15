@@ -14,6 +14,7 @@ let camera = null;
 let query = '';
 let linkBarcode = null;
 let updatingBarcode = false;
+const searchResume = window.BasketPilotSearchResume.create();
 
 function element(tag, parent, text, className) {
   const node = document.createElement(tag);
@@ -41,7 +42,19 @@ async function loadProducts() {
   $('account-status').textContent = data.length
     ? 'Personal receipt prices · Latest ' + data.length + (data.length === 1 ? ' receipt' : ' receipts')
     : 'Save a receipt to start comparing your purchases.';
-  renderResults();
+  if (!resumeProductSearch(owner)) renderResults();
+}
+
+function resumeProductSearch(owner) {
+  if (location.hash !== window.BasketPilotSearchResume.returnHash) return false;
+  const pending = searchResume.take(owner);
+  history.replaceState(history.state, '', location.pathname + location.search);
+  if (!pending || query || $('product-query').value.trim()) return false;
+  $('product-query').value = pending;
+  setResultQuery(pending);
+  $('results-title').focus({ preventScroll: true });
+  $('search-results').scrollIntoView({ block: 'start' });
+  return true;
 }
 
 function reportAccountError() {
@@ -65,6 +78,7 @@ async function setAccount(user) {
 
 function setResultQuery(value) {
   query = value.trim();
+  $('sign-in').textContent = query ? 'Sign in to see matches and return here' : 'Sign in to see your receipts';
   resetLink();
   renderResults();
 }
@@ -269,7 +283,13 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden && camera) stopCamera();
 });
 
+$('sign-in').addEventListener('click', event => {
+  if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  searchResume.remember(query);
+});
+
 sb.auth.onAuthStateChange((event, session) => {
+  if (event === 'SIGNED_OUT') searchResume.clear();
   if (['INITIAL_SESSION', 'SIGNED_IN', 'SIGNED_OUT'].includes(event)) {
     setTimeout(() => setAccount(session?.user).catch(reportAccountError), 0);
   }

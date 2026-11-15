@@ -5,6 +5,7 @@ const publishableKey='sb_publishable_c_5T1bCL67YOtiHAHvGn_Q_czQOk9sv';
 const sb=createClient(projectUrl,publishableKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
 const $=id=>document.getElementById(id);
 const state={user:null,busy:false,receipts:[],imageURL:null,pendingSave:false};
+const searchResume=window.BasketPilotSearchResume.create();
 const storeNames={sams:"Sam's Club",costco:'Costco',publix:'Publix',kroger:'Kroger'};
 const sanitizeText=(s,max=180)=>String(s??'').trim().slice(0,max);
 const number=n=>n==null||n===''?null:Number(Number(n).toFixed(2));
@@ -88,5 +89,15 @@ window.BasketPilotCloud=Object.freeze({saveOrPrompt,refreshHistory:loadHistory})
 $('auth-register').addEventListener('click',register);$('auth-login').addEventListener('click',login);$('auth-logout').addEventListener('click',logout);
 $('cloud-save').addEventListener('click',save);$('cloud-refresh').addEventListener('click',loadHistory);
 $('auth-password').addEventListener('keydown',e=>{if(e.key==='Enter')login();});
-sb.auth.onAuthStateChange(event=>{if(['SIGNED_IN','SIGNED_OUT','TOKEN_REFRESHED'].includes(event))setTimeout(()=>refreshAuth(),0);});
+function showSearchReturn(){visible($('return-product-search'),searchResume.hasPending());}
+$('resume-product-search').addEventListener('click',event=>{
+  if(event.defaultPrevented||event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
+  if(!searchResume.prepareReturn(state.user?.id))showSearchReturn();
+});
+window.addEventListener('pageshow',showSearchReturn);
+showSearchReturn();
+sb.auth.onAuthStateChange(event=>{
+  if(event==='SIGNED_OUT'){searchResume.clear();showSearchReturn();}
+  if(['SIGNED_IN','SIGNED_OUT','TOKEN_REFRESHED'].includes(event))setTimeout(()=>refreshAuth(),0);
+});
 refreshAuth().catch(e=>authStatus('Cloud unavailable: '+readableError(e)));

@@ -67,7 +67,11 @@
     <p class="muted">For this free beta, Supabase confirmation emails are limited to its project team addresses. A confirmation message may be required. Never send your password in ChatGPT.</p>
     <p class="status" id="auth-status" role="status">Sign in to save private purchase history.</p>
    </div>
-   <div id="cloud-signed-in" class="hidden"><p><b>Signed in:</b> <span id="auth-who"></span></p><button class="button ghost" id="auth-logout" type="button">Sign out</button></div>
+   <div id="cloud-signed-in" class="hidden">
+    <p><b>Signed in:</b> <span id="auth-who"></span></p>
+    <p id="return-product-search" class="hidden"><a id="resume-product-search" class="button" href="/products.html#resume-search">Return to product search</a></p>
+    <button class="button ghost" id="auth-logout" type="button">Sign out</button>
+   </div>
    <label class="checkline"><input id="cloud-photo" type="checkbox"><span><b>Also store the original receipt image privately</b> (optional, off by default). Receipts can contain payment fragments and membership numbers. JPG, PNG or WebP, 8 MB maximum.</span></label>
    <button class="button secondary" id="cloud-save" type="button" disabled>Save to my private history</button>
    <p class="status" id="cloud-status" role="status">Nothing has been saved to the cloud.</p>
@@ -169,5 +173,6 @@ for(const label of document.querySelectorAll('.photo-actions label[tabindex]')){
 $('scan').addEventListener('click',scan);$('sample').addEventListener('click',()=>{reset();sampleMode=true;$('receipt-text').value=sample;parse();});$('parse').addEventListener('click',()=>{reset();parse();});$('confirmed').addEventListener('change',toggleExports);$('store').addEventListener('change',()=>{if(parsed){const products=$('items');products.replaceChildren();for(const row of parsed.items)lineEditor(row,products,false);updateSummary();}toggleExports();});$('purchase-date').addEventListener('change',toggleExports);$('export-csv').addEventListener('click',()=>exportFile('csv'));$('export-json').addEventListener('click',()=>exportFile('json'));$('clear').addEventListener('click',()=>{clean();reset();sampleMode=false;$('receipt-text').value='';$('progress-section').classList.add('hidden');});
 })();
 </script>
+<script src="/product-search-resume.js"></script>
 <script type="module" src="/receipt-cloud.js"></script>
 </body></html>
