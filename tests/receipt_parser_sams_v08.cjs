@@ -1,0 +1,13 @@
+const assert=require('node:assert/strict');
+const p=require('../public/receipt-parser.js');
+const receipt="Sam's Club\nFRANKLIN, TN\n11/14/26 11:51 7332 6249 83\n0000123456 FIRST PRODUCT 20.00 T\n0000654321 SECOND PRODUCT 12.50 R\nINST SV FIRST PRODUCT 5.00-T\nSUBTOTAL 27.50\nTAX 1 9.75 % 1.95\nTAX 2 6.75 % 0.84\nTOTAL 30.29\nVISA DEBIT TEND 30.29";
+const x=p.parseReceipt(receipt);
+assert.equal(x.retailer,'sams');
+assert.equal(x.storeId,'6249');
+assert.equal(x.purchasedOn,'2026-11-14');
+assert.deepEqual(x.items.map(i=>i.sku),['0000123456','0000654321']);
+assert.equal(x.discounts.length,1);
+assert.equal(x.discounts[0].lineTotal,5);
+assert.equal(x.tax,2.79);
+assert.equal(x.subtotalDelta,0);
+console.log('PASS: Sam’s IDs, instant savings, tax totals, subtotal reconciliation');
