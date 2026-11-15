@@ -73,7 +73,7 @@ nav [aria-current=page]{background:var(--mint);border-radius:9px}
     <noscript><p>Product search requires JavaScript.</p></noscript>
   </section>
   <section id="search-results" aria-labelledby="results-title" hidden>
-    <h2 id="results-title">Products</h2>
+    <h2 id="results-title" tabindex="-1">Products</h2>
     <p id="search-status" role="status" class="muted"></p>
     <div id="product-results"></div>
   </section>
@@ -97,6 +97,7 @@ nav [aria-current=page]{background:var(--mint);border-radius:9px}
 </div>
 <script src="/price-insights-core.js"></script>
 <script src="/product-lookup-core.js"></script>
+<script src="/product-search-resume.js"></script>
 <script type="module" src="/product-lookup.js"></script>
 </body>
 </html>
