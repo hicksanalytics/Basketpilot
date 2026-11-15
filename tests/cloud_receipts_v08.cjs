@@ -1,0 +1,17 @@
+const fs=require('node:fs');
+const assert=require('node:assert/strict');
+const html=fs.readFileSync('public/receipts.html','utf8');
+const cloud=fs.readFileSync('public/receipt-cloud.js','utf8');
+assert.ok(html.includes('id="private-cloud"'));
+assert.ok(html.includes('BasketPilotReceiptBridge'));
+assert.ok(html.includes('receipt-cloud.js'));
+assert.ok(cloud.includes("sb.auth.signInWithPassword"));
+assert.ok(cloud.includes("sb.from('receipts').insert"));
+assert.ok(cloud.includes("sb.from('receipt_items').insert"));
+assert.ok(cloud.includes("sb.from('receipt_discounts').insert"));
+assert.ok(cloud.includes("contribution_opt_in:false"));
+assert.ok(cloud.includes("upsert:false"));
+assert.ok(!cloud.includes('service_role'));
+assert.ok(!cloud.includes('sb_secret_'));
+assert.ok(!html.includes('SCAVIO_API_KEY'));
+console.log('PASS: cloud saving, owner-auth flow and public-data separation');
