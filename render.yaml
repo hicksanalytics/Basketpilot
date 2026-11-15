@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: basketpilot-preview
+    runtime: static
+    buildCommand: echo "Static BasketPilot preview - no build required"
+    staticPublishPath: ./public
+    autoDeployTrigger: off
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
