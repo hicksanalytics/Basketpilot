@@ -1,0 +1,192 @@
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { before, after, test } = require('node:test');
+const { setTimeout: sleep } = require('node:timers/promises');
+const { PGlite } = require('@electric-sql/pglite');
+const { JSDOM } = require('jsdom');
+
+const read = file => fs.readFileSync(path.join(__dirname, '../..', file), 'utf8');
+const owner = '10000000-0000-0000-0000-000000000001';
+const upc = '036000291452';
+const gtin = '00036000291452';
+const otherUpc = '012345678905';
+const otherGtin = '00012345678905';
+let db, createCommunityLookup;
+
+async function consent(id, action, revision) {
+  return db.transaction(async tx => {
+    await tx.exec('set local role authenticated');
+    await tx.query("select set_config('request.jwt.claim.sub', $1, true)", [owner]);
+    const { rows } = await tx.query('select * from receipt_community.set_consent($1,$2,$3)', [id, action, revision]);
+    assert.equal(rows[0].outcome, action === 'share' ? 'shared' : 'withdrawn');
+  });
+}
+
+async function save({ retailer, store, date, code, price, privateGtin = null, share = true }) {
+  const id = randomUUID();
+  await db.query('insert into receipts (id, owner_id, retailer, store_id, purchase_date, subtotal) values ($1,$2,$3,$4,$5,$6)',
+    [id, owner, retailer, store, date, price]);
+  await db.query('insert into receipt_items (id, receipt_id, retailer_item_code, quantity, gross_line_total, package_gtin) values ($1,$2,$3,1,$4,$5)',
+    [randomUUID(), id, code, price, privateGtin]);
+  if (share) await consent(id, 'share', 0);
+  return id;
+}
+
+before(async () => {
+  ({ createCommunityLookup } = await import('../../supabase/drafts/community-product-lookup.mjs'));
+  db = await PGlite.create();
+  await db.exec(read('tests/community/receipt-schema.sql'));
+  await db.exec(read('supabase/drafts/receipt_community.sql'));
+  await db.exec(`
+    insert into receipt_community.verified_stores values
+      ('sams', '0101', 'Synthetic Franklin Club', 'https://example.com/club'),
+      ('costco', '0202', 'Synthetic Brentwood Warehouse', 'https://example.com/warehouse');
+    insert into receipt_community.verified_packages values
+      ('sams', '000111', 'Fixture Oats, 24 ct', 'https://example.com/large', '${gtin}'),
+      ('costco', '000111', 'Fixture Oats, 12 ct', 'https://example.com/small', '${otherGtin}'),
+      ('sams', '000333', 'Fixture Oats, 6 ct', 'https://example.com/trial', null),
+      ('sams', '000444', 'Fixture Oats, 48 ct', 'https://example.com/bulk', null);
+  `);
+  await save({ retailer: 'sams', store: '0101', date: '2024-11-10', code: '000111', price: 19.95 });
+  await save({ retailer: 'sams', store: '0101', date: '2024-10-03', code: '000111', price: 17.95 });
+  await save({ retailer: 'costco', store: '0202', date: '2024-11-09', code: '000111', price: 11.99 });
+  await save({ retailer: 'sams', store: '0101', date: '2024-11-06', code: '000333', price: 7.49, privateGtin: gtin });
+  await save({ retailer: 'sams', store: '0101', date: '2024-11-12', code: '000444', price: 21.99, share: false });
+});
+
+after(async () => db?.close());
+
+async function packagePrices({ name, packageGtin }) {
+  const { rows } = await db.query(
+    'select * from receipt_community.search_package_prices($1,$2)',
+    [name, packageGtin]
+  );
+  return rows.map(row => ({ ...row, purchase_date: row.purchase_date.toISOString().slice(0, 10) }));
+}
+
+async function until(predicate, message) {
+  for (let attempt = 0; attempt < 300; attempt++) {
+    if (predicate()) return;
+    await sleep(10);
+  }
+  assert.fail(message);
+}
+
+function build(t, { signedIn = false, enabled = true, request = packagePrices } = {}) {
+  const dom = new JSDOM(read('public/products.html'), {
+    url: 'https://basketpilot.test/products.html',
+    runScripts: 'outside-only'
+  });
+  t.after(() => dom.window.close());
+  const { window } = dom;
+  const byId = id => window.document.getElementById(id);
+  const personalReceipts = [{
+    retailer: 'sams', store_id: '0101', purchase_date: '2024-11-12',
+    receipt_items: [{
+      id: 'private-item', retailer_item_code: '000111', receipt_description: 'Personal fixture oats 24 ct',
+      package_gtin: gtin, quantity: 1, gross_line_total: 18.25
+    }]
+  }];
+  const chain = { select: () => chain, eq: () => chain, order: () => chain, limit: async () => ({ data: personalReceipts }) };
+  window.fixture = {
+    createClient: () => ({
+      auth: { onAuthStateChange: callback => callback('INITIAL_SESSION', signedIn ? { user: { id: owner } } : null) },
+      from: () => chain
+    })
+  };
+
+  for (const script of window.document.querySelectorAll('script[src]:not([type])')) {
+    window.eval(read('public' + script.getAttribute('src')));
+  }
+  window.fixture.community = createCommunityLookup(byId('community-results'), {
+    request,
+    normalizeBarcode: window.BasketPilotProductLookup.normalizeBarcode,
+    retailerNames: { sams: "Sam's Club", costco: 'Costco' }
+  });
+  let code = read('public/product-lookup.js').replace(/^import .*;$/m, 'const { createClient } = window.fixture;');
+  assert.ok(code.includes('const communityLookup = null;'));
+  if (enabled) code = code.replace('const communityLookup = null;', 'const communityLookup = window.fixture.community;');
+  window.eval(code);
+  return {
+    byId,
+    search(query) {
+      byId('product-query').value = query;
+      byId('product-search').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+    }
+  };
+}
+
+test('a signed-out name search displays dated prices for distinct packages and omits unshared receipts', async t => {
+  const { byId, search } = build(t);
+  await until(() => !byId('sign-in').hidden, 'Guest view should be ready');
+  search(' Fixture Oats ');
+  const community = byId('community-results');
+  const cards = () => [...community.querySelectorAll('article')];
+  await until(() => cards().length === 3, 'Three independently verified packages should appear');
+  assert.deepEqual(cards().map(card => card.querySelector('h3').textContent),
+    ['Fixture Oats, 12 ct', 'Fixture Oats, 24 ct', 'Fixture Oats, 6 ct']);
+  const large = cards()[1];
+  assert.deepEqual([...large.querySelectorAll('time')].map(time => time.dateTime), ['2024-11-10', '2024-10-03']);
+  assert.match(large.textContent, /Synthetic Franklin Club.*Purchased Nov 10, 2024.*\$19\.95 per package/);
+  assert.doesNotMatch(community.textContent, /48 ct|PRIVATE PRINTED LABEL|\$21\.99/);
+  assert.match(byId('lookup-description').textContent, /Current retailer prices are unavailable/);
+});
+
+test('barcode search uses only the curated exact package barcode and keeps personal prices separate', async t => {
+  const { byId, search } = build(t, { signedIn: true });
+  await until(() => byId('account-status').textContent.includes('Latest 1'), 'Personal history should be ready');
+  search(upc);
+  await until(() => byId('community-prices').querySelectorAll('article').length === 1, 'Exact package should appear');
+  assert.match(byId('community-prices').textContent, /24 ct/);
+  assert.doesNotMatch(byId('community-prices').textContent, /12 ct|6 ct|\$18\.25/);
+  assert.match(byId('product-results').textContent, /\$18\.25/);
+  assert.doesNotMatch(byId('product-results').textContent, /\$19\.95/);
+  assert.equal(byId('results-title').textContent, 'Your receipt prices');
+  search(otherUpc);
+  await until(() => byId('community-prices').textContent.includes('12 ct'), 'Barcode for smaller package should appear');
+  assert.doesNotMatch(byId('community-prices').textContent, /24 ct/);
+});
+
+test('withdrawal removes a price from a fresh lookup and the response contains no source identifiers', async () => {
+  const id = await save({ retailer: 'sams', store: '0101', date: '2024-11-13', code: '000111', price: 14.25 });
+  const query = { name: null, packageGtin: gtin };
+  const rows = await packagePrices(query);
+  assert.deepEqual(rows[0], {
+    retailer: 'sams', receipt_item_code: '000111', package_name: 'Fixture Oats, 24 ct', package_gtin: gtin,
+    store_id: '0101', location_name: 'Synthetic Franklin Club', purchase_date: '2024-11-13', package_price_cents: 1425
+  });
+  await consent(id, 'withdraw', 1);
+  assert.deepEqual((await packagePrices(query)).map(row => row.package_price_cents), [1995, 1795]);
+  assert.deepEqual(await packagePrices({ name: '%%', packageGtin: null }), []);
+});
+
+test('an outdated lookup cannot overwrite a new search and invalid barcodes stay local', async t => {
+  const pending = Promise.withResolvers();
+  const requests = [];
+  const { byId, search } = build(t, {
+    request: input => {
+      requests.push(input);
+      return input.name ? pending.promise : packagePrices(input);
+    }
+  });
+  search('Oats');
+  search(otherUpc);
+  await until(() => byId('community-prices').textContent.includes('12 ct'), 'Second search should finish first');
+  pending.resolve(await packagePrices({ name: 'Oats', packageGtin: null }));
+  await pending.promise;
+  assert.equal(byId('community-prices').querySelectorAll('article').length, 1);
+  search('036000291451');
+  assert.match(byId('community-status').textContent, /Check the digits/);
+  assert.equal(byId('community-prices').children.length, 0);
+  assert.equal(requests.length, 2);
+});
+
+test('the published configuration keeps community lookup dormant', async t => {
+  const { byId, search } = build(t, { enabled: false, request: () => assert.fail('Community transport is disabled') });
+  await until(() => !byId('sign-in').hidden, 'Guest view should be ready');
+  search(upc);
+  assert.equal(byId('community-results').hidden, true);
+  assert.match(byId('search-status').textContent, /Sign in to see your receipt matches/);
+});

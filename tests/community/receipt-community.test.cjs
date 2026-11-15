@@ -124,6 +124,7 @@ test('owner has no direct access to the observation or allowlist tables', async 
     'select * from receipt_community.observations',
     'select * from receipt_community.eligible_lines',
     "select * from receipt_community.package_price_history('fixture', '0000000421')",
+    "select * from receipt_community.search_package_prices('Synthetic')",
     'delete from receipt_community.observations',
     "insert into receipt_community.verified_stores values ('fixture', '9999', 'Forged', 'https://example.com')",
     'update receipt_community.verified_packages set package_name = package_name',

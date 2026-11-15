@@ -35,7 +35,7 @@ button:disabled{opacity:.55;cursor:default}
 video{width:100%;max-height:250px;background:var(--green);object-fit:cover;border-radius:10px;margin-top:12px;display:block}
 [hidden]{display:none!important}
 #search-status:empty,#scan-status:empty{display:none}
-#search-results{margin-top:22px;overflow-wrap:anywhere}
+#search-results,#community-results{margin-top:22px;overflow-wrap:anywhere}
 .price-list{margin:10px 0 0;padding:0;list-style:none}
 .price-row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--line);line-height:1.35}
 .price-row strong:last-child{white-space:nowrap}
@@ -53,7 +53,7 @@ nav [aria-current=page]{background:var(--mint);border-radius:9px}
 <header><a class="brand" href="/">basketpilot<span>.</span></a><a href="/insights.html">My Prices</a></header>
 <main>
   <h1>Find a product</h1>
-  <p class="muted">Search by name or scan the package barcode. Compare dated prices from your saved purchases across stores. Live local pricing is unavailable in this preview.</p>
+  <p class="muted" id="lookup-description">Search by name or scan the package barcode. Compare dated prices from your saved purchases across stores. Live local pricing is unavailable in this preview.</p>
   <section class="panel" aria-label="Product search">
     <form id="product-search" role="search">
       <label for="product-query">Product name or barcode number</label>
@@ -71,6 +71,12 @@ nav [aria-current=page]{background:var(--mint);border-radius:9px}
     <p id="account-status" class="muted account-message" role="status">Checking your private receipt history…</p>
     <a id="sign-in" href="/receipts.html#private-cloud" hidden>Sign in to see your receipts</a>
     <noscript><p>Product search requires JavaScript.</p></noscript>
+  </section>
+  <section id="community-results" aria-labelledby="community-title" hidden>
+    <h2 id="community-title">Community receipt prices</h2>
+    <p class="muted">Past prices paid by shoppers. Check the exact package, store, and purchase date.</p>
+    <p id="community-status" class="muted" role="status"></p>
+    <div id="community-prices"></div>
   </section>
   <section id="search-results" aria-labelledby="results-title" hidden>
     <h2 id="results-title">Products</h2>

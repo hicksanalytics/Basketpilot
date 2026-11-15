@@ -17,8 +17,12 @@ create table receipt_community.verified_packages (
   receipt_item_code text not null,
   package_name text not null,
   evidence_url text not null,
+  package_gtin text check (package_gtin ~ '^[0-9]{14}$'),
   primary key (retailer, receipt_item_code)
 );
+
+create index on receipt_community.verified_packages (package_gtin)
+  where package_gtin is not null;
 
 create table receipt_community.consent_revisions (
   receipt_id uuid primary key references public.receipts(id) on delete cascade,
@@ -198,6 +202,49 @@ as $function$
 $function$;
 
 revoke all on function receipt_community.package_price_history(text, text)
+  from public, anon, authenticated;
+
+-- Search only the curated catalog. Private barcode links never seed this lookup.
+create function receipt_community.search_package_prices(
+  p_name text default null,
+  p_package_gtin text default null
+)
+returns table (
+  retailer text, receipt_item_code text, package_name text, package_gtin text,
+  store_id text, location_name text, purchase_date date, package_price_cents integer
+)
+language sql
+stable
+set search_path = ''
+as $function$
+  with matched as (
+    select p.retailer, p.receipt_item_code, p.package_gtin
+    from receipt_community.verified_packages p
+    where (
+      (p_name is null and p_package_gtin ~ '^[0-9]{14}$' and p.package_gtin = p_package_gtin)
+      or (p_package_gtin is null and char_length(btrim(p_name)) between 2 and 120
+        and strpos(lower(p.package_name), lower(btrim(p_name))) > 0)
+    )
+    and exists (
+      select 1 from receipt_community.observations o
+      where o.retailer = p.retailer and o.receipt_item_code = p.receipt_item_code
+    )
+    order by p.package_name, p.retailer, p.receipt_item_code
+    limit 12
+  )
+  select h.retailer, h.receipt_item_code, h.package_name, m.package_gtin, h.store_id,
+    h.location_name, h.purchase_date, h.package_price_cents
+  from matched m
+  cross join lateral (
+    select * from receipt_community.package_price_history(m.retailer, m.receipt_item_code) h
+    order by h.purchase_date desc, h.store_id, h.package_price_cents
+    limit 10
+  ) h
+  order by h.package_name, h.retailer, h.receipt_item_code, h.purchase_date desc,
+    h.store_id, h.package_price_cents
+$function$;
+
+revoke all on function receipt_community.search_package_prices(text, text)
   from public, anon, authenticated;
 
 commit;

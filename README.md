@@ -46,7 +46,7 @@ npm ci --prefix tests/community --ignore-scripts
 npm --prefix tests/community test
 ```
 
-The tests run the receipt page and its controls in a simulated browser DOM with a synthetic database transport. Private save completes first. Receipt review then offers a separate sharing action, and saved receipts offer the same controls in history. The published configuration has the controller disabled. The draft has no hosted endpoint or live catalog seed.
+The tests run the receipt and product pages in a simulated browser DOM with a synthetic database transport. Receipt review offers sharing after private save, and previously saved receipts offer the same controls in history. Find a Product searches the curated package name or independently verified barcode and puts dated shared prices in their own section. The published configuration keeps both controllers disabled. The draft has no hosted endpoint or live catalog seed.
 
 ## Future work
 

@@ -6,6 +6,8 @@ const insights = window.BasketPilotInsightsCore;
 const $ = id => document.getElementById(id);
 const storeNames = { costco: 'Costco', sams: "Sam's Club", publix: 'Publix', kroger: 'Kroger' };
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+// Only the isolated test build supplies a community lookup transport.
+const communityLookup = null;
 let products = [];
 let account = null;
 let accountRequest = 0;
@@ -66,6 +68,7 @@ async function setAccount(user) {
 function setResultQuery(value) {
   query = value.trim();
   resetLink();
+  communityLookup?.search(query);
   renderResults();
 }
 
@@ -87,6 +90,10 @@ function renderResults() {
   const barcodeQuery = /^[\d\s-]+$/.test(query);
   const barcode = barcodeQuery ? lookup.normalizeBarcode(query) : null;
   if (barcodeQuery && !barcode) {
+    if (communityLookup) {
+      $('search-results').hidden = true;
+      return;
+    }
     status.textContent = 'Check the digits under the barcode or try scanning it again.';
     return;
   }
@@ -258,6 +265,10 @@ $('product-search').addEventListener('submit', event => {
   if (camera) stopCamera();
   setResultQuery($('product-query').value);
 });
+if (communityLookup) {
+  $('results-title').textContent = 'Your receipt prices';
+  $('lookup-description').textContent = 'Search by name or scan the package barcode to compare past purchases. Current retailer prices are unavailable in this preview.';
+}
 $('link-search').addEventListener('submit', event => {
   event.preventDefault();
   showCandidates();
