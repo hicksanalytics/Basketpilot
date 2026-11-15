@@ -46,7 +46,7 @@ npm ci --prefix tests/community --ignore-scripts
 npm --prefix tests/community test
 ```
 
-The draft ships with no verified store or package seeds and has no web endpoint. Keep it out of deployed migrations and the public preview until rollout is approved.
+The tests run the receipt page and its controls in a simulated browser DOM with a synthetic database transport. Private save completes first. Receipt review then offers a separate sharing action, and saved receipts offer the same controls in history. The published configuration has the controller disabled. The draft has no hosted endpoint or live catalog seed.
 
 ## Future work
 

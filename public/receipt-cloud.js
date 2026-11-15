@@ -3,6 +3,8 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const projectUrl='https://vfctfvbufuvmbxnrfmaj.supabase.co';
 const publishableKey='sb_publishable_c_5T1bCL67YOtiHAHvGn_Q_czQOk9sv';
 const sb=createClient(projectUrl,publishableKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
+// The isolated test build injects its synthetic transport here.
+const receiptCommunity = null;
 const $=id=>document.getElementById(id);
 const state={user:null,busy:false,receipts:[],imageURL:null,pendingSave:false};
 const storeNames={sams:"Sam's Club",costco:'Costco',publix:'Publix',kroger:'Kroger'};
@@ -16,25 +18,28 @@ function appendText(parent,tag,value,cls){const n=document.createElement(tag);n.
 function visible(el,yes){el.classList.toggle('hidden',!yes);}
 function input(){return {email:$('auth-email').value.trim().toLowerCase(),password:$('auth-password').value};}
 function readableError(error){const raw=error?.message||String(error||'Unknown error');if(/email address not authorized/i.test(raw))return 'Supabase’s free email service currently accepts only project team email addresses. Use the email on your Supabase team.';return raw;}
-async function currentUser(){const {data,error}=await sb.auth.getUser();state.user=error?null:data?.user||null;return state.user;}
+function clearReviewCommunity(){const host=$('review-community');host.replaceChildren();host.hidden=true;}
+async function currentUser(){const {data,error}=await sb.auth.getUser();const nextUser=error?null:data?.user||null;if(state.user?.id!==nextUser?.id){clearReviewCommunity();$('cloud-history').replaceChildren();}state.user=nextUser;return state.user;}
 async function refreshAuth(){await currentUser();visible($('cloud-auth'),!state.user);visible($('cloud-signed-in'),!!state.user);$('auth-who').textContent=state.user?.email||'Signed in';$('cloud-save').disabled=!state.user||state.busy;if(state.user)await loadHistory();else $('cloud-history').replaceChildren();}
 async function register(){const {email,password}=input();if(!email||password.length<10){authStatus('Enter your email and a password of at least 10 characters.');return;}busy(true);authStatus('Creating your account…');
  try{const {data,error}=await sb.auth.signUp({email,password,options:{emailRedirectTo:location.origin+'/receipts.html'}});if(error)throw error;authStatus(data?.session?'Account created. Signed in.':'Check your email to confirm, then return here and sign in. If the confirmation opens a default localhost page, return here manually.');await refreshAuth();if(state.pendingSave&&state.user){state.pendingSave=false;await save();}}catch(err){authStatus(readableError(err));}finally{busy(false);}}
 async function login(){const {email,password}=input();if(!email||!password){authStatus('Enter email and password.');return;}busy(true);authStatus('Signing in…');try{const {error}=await sb.auth.signInWithPassword({email,password});if(error)throw error;authStatus('Signed in.');await refreshAuth();if(state.pendingSave&&state.user){state.pendingSave=false;await save();}}catch(err){authStatus(readableError(err));}finally{busy(false);}}
-async function logout(){const {error}=await sb.auth.signOut();if(error){authStatus(readableError(error));return;}state.user=null;state.receipts=[];status('Signed out. Your saved receipts remain private in Supabase.');await refreshAuth();}
+async function logout(){const {error}=await sb.auth.signOut();if(error){authStatus(readableError(error));return;}state.user=null;state.receipts=[];clearReviewCommunity();status('Signed out. Your saved receipts remain private in Supabase.');await refreshAuth();}
 function snapshot(){return window.BasketPilotReceiptBridge?.getPayload?.()||null;}
 function validatedSnapshot(){const info=snapshot();if(!info?.valid||!info.parsed||!info.retailer||!info.purchaseDate)throw Error('Scan or paste your receipt and correct any missing retailer, date, quantity or price.');
  if(info.isSample)throw Error('The fictional sample cannot be saved to your real purchase history. Upload a receipt or paste actual receipt text.');
- const items=info.parsed.items||[],discounts=info.parsed.discounts||[];if(!items.length||items.length>400||items.length+discounts.length>400)throw Error('Receipt must have 1–400 reviewed lines.');
+ const items=(info.parsed.items||[]).map(item=>({...item})),discounts=(info.parsed.discounts||[]).map(discount=>({...discount}));if(!items.length||items.length>400||items.length+discounts.length>400)throw Error('Receipt must have 1–400 reviewed lines.');
  const gross=items.reduce((n,x)=>n+Number(x.lineTotal),0),saved=discounts.reduce((n,x)=>n+Number(x.lineTotal),0);
  const reconciled=info.parsed.subtotal!==null&&Math.abs(gross-saved-Number(info.parsed.subtotal))<=.05;
- return {...info,items,discounts,reconciled};}
+ return {...info,parsed:{...info.parsed},items,discounts,reconciled};}
 async function fingerprint(data){const payload=[data.retailer,data.storeId,data.purchaseDate,data.parsed.total??null,data.items.map(x=>[x.sku,x.description,x.quantity,x.lineTotal]),data.discounts.map(x=>[x.description,x.lineTotal])];const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(payload)));return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');}
 function imageMeta(file){if(!file)return null;const mime=(file.type||'').toLowerCase();const suffix={'image/jpeg':'jpg','image/png':'png','image/webp':'webp'}[mime];if(!suffix)throw Error('For private photo storage use JPG, PNG or WebP, or uncheck Keep original photo.');if(file.size>8*1024*1024)throw Error('Original photo exceeds 8 MB; choose a smaller photo or uncheck image storage.');return {mime,suffix};}
 async function save(){if(!state.user){status('Sign in before saving.');return;}let data;try{data=validatedSnapshot();if($('cloud-photo').checked&&data.file)imageMeta(data.file);}catch(err){status(readableError(err));return;}
- busy(true);status('Saving reviewed items privately…');let receiptId=null;try{
+ const owner=state.user.id;
+ const keepPhoto=$('cloud-photo').checked;
+ clearReviewCommunity();busy(true);status('Saving reviewed items privately…');let receiptId=null;try{
  const receipt_fingerprint=await fingerprint(data);
- const header={owner_id:state.user.id,retailer:data.retailer,store_id:sanitizeText(data.storeId,12)||null,purchase_date:data.purchaseDate,subtotal:number(data.parsed.subtotal),tax_total:number(data.parsed.tax),total:number(data.parsed.total),receipt_fingerprint,source_type:data.file?'receipt_image':'pasted_text',status:'pending_match',contribution_opt_in:false};
+ const header={owner_id:owner,retailer:data.retailer,store_id:sanitizeText(data.storeId,12)||null,purchase_date:data.purchaseDate,subtotal:number(data.parsed.subtotal),tax_total:number(data.parsed.tax),total:number(data.parsed.total),receipt_fingerprint,source_type:data.file?'receipt_image':'pasted_text',status:'pending_match',contribution_opt_in:false};
  const created=await sb.from('receipts').insert(header).select('id').single();
  if(created.error){if(created.error.code==='23505'){status('This receipt was already saved.');await loadHistory();return;}throw created.error;}
  receiptId=created.data.id;
@@ -52,13 +57,18 @@ async function save(){if(!state.user){status('Sign in before saving.');return;}l
  const itemResult=await sb.from('receipt_items').insert(itemRows);if(itemResult.error)throw itemResult.error;
  if(data.discounts.length){const disRows=data.discounts.map((x,i)=>({receipt_id:receiptId,line_position:i,label:sanitizeText(x.description,180),amount:number(x.lineTotal),allocation_status:'unallocated'}));const dr=await sb.from('receipt_discounts').insert(disRows);if(dr.error)throw dr.error;}
  let imageNote='';
- if($('cloud-photo').checked&&data.file){const meta=imageMeta(data.file),path=state.user.id+'/'+receiptId+'/original.'+meta.suffix;
+ if(keepPhoto&&data.file){const meta=imageMeta(data.file),path=owner+'/'+receiptId+'/original.'+meta.suffix;
    const up=await sb.storage.from('basketpilot-receipt-images').upload(path,data.file,{contentType:meta.mime,upsert:false});
    if(up.error)imageNote=' Original image was not saved: '+up.error.message;
    else{const update=await sb.from('receipts').update({photo_path:path}).eq('id',receiptId);if(update.error){await sb.storage.from('basketpilot-receipt-images').remove([path]);imageNote=' Image link failed; the image was removed.';}}
  }
  status('Saved '+itemRows.length+' items and '+data.discounts.length+' discounts privately.'+(data.reconciled?' Subtotal reconciled.':' Subtotal needs review.')+' View your updated product trends in My Prices. No community sharing.'+imageNote);
  $('receipt-view-insights').classList.remove('hidden');
+ if(receiptCommunity&&state.user?.id===owner&&snapshot()?.reviewRevision===data.reviewRevision){
+   const host=$('review-community');
+   host.hidden=false;
+   receiptCommunity.mount(host,receiptId,{expanded:true});
+ }
  await loadHistory();
  }catch(err){if(receiptId){const rollback=await sb.from('receipts').delete().eq('id',receiptId);status(rollback.error?'Save failed; a partial receipt may remain. Check history. ':'Save failed; no receipt was kept. '+readableError(err));}else status('Save failed: '+readableError(err));}
  finally{busy(false);}}
@@ -68,11 +78,13 @@ function receiptCard(r){const box=document.createElement('div');box.className='c
  for(const d of r.receipt_discounts||[])appendText(ul,'li','Discount: '+d.label+' −'+money(d.amount));
  details.appendChild(ul);box.appendChild(details);const controls=document.createElement('div');controls.className='buttons';
  if(r.photo_path){const photo=document.createElement('button');photo.type='button';photo.className='button secondary';photo.textContent='View private image';photo.addEventListener('click',()=>viewPhoto(r));controls.appendChild(photo);}
- const del=document.createElement('button');del.type='button';del.className='button ghost';del.textContent='Delete receipt';del.addEventListener('click',()=>deleteReceipt(r));controls.appendChild(del);box.appendChild(controls);return box;}
-async function loadHistory(){if(!state.user)return;const list=$('cloud-history');list.replaceChildren();const {data,error}=await sb.from('receipts').select('id,retailer,store_id,purchase_date,total,photo_path,created_at,receipt_items(retailer_item_code,receipt_description,quantity,gross_line_total,match_status,matched_product_id,matched_title),receipt_discounts(label,amount)').order('created_at',{ascending:false}).limit(25);
+ const del=document.createElement('button');del.type='button';del.className='button ghost';del.textContent='Delete receipt';del.addEventListener('click',()=>deleteReceipt(r));controls.appendChild(del);box.appendChild(controls);receiptCommunity?.mount(box,r.id);return box;}
+let historyRequest=0;
+async function loadHistory(){if(!state.user)return;const owner=state.user.id,request=++historyRequest;const list=$('cloud-history');list.replaceChildren();const {data,error}=await sb.from('receipts').select('id,retailer,store_id,purchase_date,total,photo_path,created_at,receipt_items(retailer_item_code,receipt_description,quantity,gross_line_total,match_status,matched_product_id,matched_title),receipt_discounts(label,amount)').order('created_at',{ascending:false}).limit(25);
+ if(state.user?.id!==owner||request!==historyRequest)return;
  if(error){appendText(list,'p','Cannot load receipts: '+error.message,'muted');return;}state.receipts=data||[];if(!state.receipts.length){appendText(list,'p','No saved receipts. Review a scan and choose Save privately.','muted');return;}for(const row of state.receipts)list.appendChild(receiptCard(row));}
 async function viewPhoto(r){if(state.imageURL){URL.revokeObjectURL(state.imageURL);state.imageURL=null;}const {data,error}=await sb.storage.from('basketpilot-receipt-images').download(r.photo_path);if(error){status('Could not load image: '+readableError(error));return;}state.imageURL=URL.createObjectURL(data);const img=$('cloud-photo-preview');img.src=state.imageURL;visible(img,true);img.scrollIntoView({behavior:'smooth',block:'nearest'});}
-async function deleteReceipt(r){if(!window.confirm('Permanently delete this saved receipt, its items and the optional photo?'))return;busy(true);try{if(r.photo_path){const remove=await sb.storage.from('basketpilot-receipt-images').remove([r.photo_path]);if(remove.error)throw remove.error;}const result=await sb.from('receipts').delete().eq('id',r.id);if(result.error)throw result.error;status('Receipt deleted.');if(state.imageURL){URL.revokeObjectURL(state.imageURL);state.imageURL=null;}visible($('cloud-photo-preview'),false);await loadHistory();}catch(err){status('Delete failed: '+readableError(err));}finally{busy(false);}}
+async function deleteReceipt(r){if(!window.confirm('Permanently delete this saved receipt, its items and the optional photo?'))return;busy(true);try{if(r.photo_path){const remove=await sb.storage.from('basketpilot-receipt-images').remove([r.photo_path]);if(remove.error)throw remove.error;}const result=await sb.from('receipts').delete().eq('id',r.id);if(result.error)throw result.error;clearReviewCommunity();status('Receipt deleted.');if(state.imageURL){URL.revokeObjectURL(state.imageURL);state.imageURL=null;}visible($('cloud-photo-preview'),false);await loadHistory();}catch(err){status('Delete failed: '+readableError(err));}finally{busy(false);}}
 async function saveOrPrompt(){
  if(state.busy){status('Saving is already in progress.');return;}
  if(!state.user){
