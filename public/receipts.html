@@ -76,17 +76,18 @@
    <div id="cloud-history"><p class="muted">Sign in to view your saved purchases.</p></div>
    <img class="hidden" id="cloud-photo-preview" alt="Private saved receipt image">
   </section>
-  <footer class="muted" style="padding:17px;text-align:center">BasketPilot beta · Free local OCR · Private purchase history · No community price sharing</footer>
+  <footer class="muted" style="padding:17px;text-align:center">BasketPilot beta · On-device OCR · Private receipt history · <a href="/insights.html">My Prices & Trends</a> · No community price sharing</footer>
 </main>
-<nav class="nav" aria-label="Navigation"><a href="/"><span>⌂</span>Home</a><a href="/#compare"><span>⇄</span>Compare</a><a href="/#basket"><span>🛒</span>Basket</a><a href="/receipts.html" aria-current="page"><span>▣</span>Receipts</a></nav>
+<nav class="nav" aria-label="Navigation"><a href="/"><span>⌂</span>Home</a><a href="/#basket"><span>🛒</span>Basket</a><a href="/receipts.html" aria-current="page"><span>▣</span>Receipts</a><a href="/insights.html"><span>▥</span>My Prices</a></nav>
 </div>
 <script src="/receipt-parser.js"></script>
 <script src="/verified-receipt-catalog.js"></script>
+<script src="/price-insights-core.js"></script>
 <script>
 (() => {
 'use strict';
 const $=id=>document.getElementById(id);
-let file=null,objectURL=null,parsed=null,busy=false;
+let file=null,objectURL=null,parsed=null,busy=false,sampleMode=false;
 const sample=`PUBLIX\n11/14/2026\n2 X RAOS MARINARA 17.98\nBOGO SAVINGS -8.99\nMILK WHOLE GALLON 4.29\nSTRAWBERRIES 3.99\nSUBTOTAL 17.27\nTAX 0.00\nTOTAL 17.27`;
 function status(message){$('photo-status').textContent=message;}
 function message(message){$('finalstatus').textContent=message;}
@@ -101,7 +102,7 @@ function lineEditor(item,container,discount){
  const match=!discount?window.BasketPilotVerifiedCatalog?.lookup($('store').value,item.sku):null;
  item.catalogMatch=match||null;
  const flag=el('span',{class:'flag'+(discount?' discount':match?' verified':''),text:discount?'Discount · allocation pending':match?'✓ Exact item # verified':'Needs product match'},title);
- if(match)el('div',{class:'matched-name',text:match.title},box);
+ const matchedName=!discount?el('div',{class:'matched-name',text:match?.title||''},box):null;
 
  const del=el('button',{class:'small-btn',type:'button',text:'Remove'},title);del.addEventListener('click',()=>{parsed[discount?'discounts':'items']=parsed[discount?'discounts':'items'].filter(x=>x!==item);box.remove();updateSummary();});
  const edit=match?el('details',{class:'line-edit'},box):box;if(match)el('summary',{text:'Correct product or price'},edit);
@@ -110,7 +111,7 @@ function lineEditor(item,container,discount){
  el('label',{text:'Qty'},qtyField);const qty=el('input',{type:'number',step:'0.01',min:'0.01',max:'1000','aria-label':'Quantity'},qtyField);qty.value=String(item.quantity);
  el('label',{text:discount?'Savings':'Line paid'},valField);const amount=el('input',{type:'number',step:'0.01',min:'0',max:'20000','aria-label':discount?'Savings amount':'Paid amount'},valField);amount.value=item.lineTotal.toFixed(2);
  el('label',{text:'Item ID'},skuField);const sku=el('input',{type:'text',maxlength:14,'aria-label':'Retailer item ID'},skuField);sku.value=item.sku||'';
- function update(){const n=Number(qty.value),m=Number(amount.value);item.quantity=Number.isFinite(n)&&n>0&&n<=1000?n:0;item.lineTotal=Number.isFinite(m)&&m>=0&&m<=20000?Number(m.toFixed(2)):NaN;item.sku=sku.value.replace(/[^0-9]/g,'').slice(0,14);item.unitPrice=item.quantity&&Number.isFinite(item.lineTotal)?Number((item.lineTotal/item.quantity).toFixed(2)):NaN;if(!discount){const m=window.BasketPilotVerifiedCatalog?.lookup($('store').value,item.sku)||null;item.catalogMatch=m;flag.textContent=m?'✓ Exact item # verified':'Needs product match';flag.className='flag'+(m?' verified':'');}updateSummary();}
+ function update(){const n=Number(qty.value),m=Number(amount.value);item.quantity=Number.isFinite(n)&&n>0&&n<=1000?n:0;item.lineTotal=Number.isFinite(m)&&m>=0&&m<=20000?Number(m.toFixed(2)):NaN;item.sku=sku.value.replace(/[^0-9]/g,'').slice(0,14);item.unitPrice=item.quantity&&Number.isFinite(item.lineTotal)?Number((item.lineTotal/item.quantity).toFixed(2)):NaN;if(!discount){const m=window.BasketPilotVerifiedCatalog?.lookup($('store').value,item.sku)||null;item.catalogMatch=m;flag.textContent=m?'✓ Exact item # verified':'Needs product match';flag.className='flag'+(m?' verified':'');if(matchedName)matchedName.textContent=m?.title||'';}updateSummary();}
  for(const node of [qty,amount,sku])node.addEventListener('input',update);
 }
 function updateSummary(){if(!parsed)return;const node=$('summary');node.replaceChildren();const gross=parsed.items.reduce((s,x)=>s+Number(x.lineTotal||0),0),saved=parsed.discounts.reduce((s,x)=>s+Number(x.lineTotal||0),0);const net=gross-saved;
@@ -143,7 +144,7 @@ async function scan(){if(busy||!file)return;busy=true;$('scan').disabled=true;$(
 }
 function receiveReceiptPhoto(e){
  const selected=e.target.files&&e.target.files[0];
- clean();reset();
+ clean();reset();sampleMode=false;
  if(!selected)return;
  const imageType=(selected.type||'').toLowerCase();
  const imageName=(selected.name||'').toLowerCase();
@@ -157,14 +158,14 @@ function receiveReceiptPhoto(e){
  $('scan').disabled=false;
  status((selected.name||'Receipt photo')+' · '+(selected.size/1024/1024).toFixed(1)+' MB · Reading automatically…');setTimeout(()=>{if(file===selected)scan();},0);
 }
-window.BasketPilotReceiptBridge={getPayload:()=>({valid:!!valid(),parsed,retailer:$('store').value,storeId:$('store-id').value.trim(),purchaseDate:$('purchase-date').value,file})};
+window.BasketPilotReceiptBridge={getPayload:()=>({valid:!!valid(),parsed,retailer:$('store').value,storeId:$('store-id').value.trim(),purchaseDate:$('purchase-date').value,file,isSample:sampleMode})};
 $('quick-save').addEventListener('click',()=>{if(!valid()){message('Correct missing receipt fields first.');return;}if(!window.BasketPilotCloud?.saveOrPrompt){message('Private account connection is loading. Try again.');return;}window.BasketPilotCloud.saveOrPrompt();});
 $('receipt-file').addEventListener('change',receiveReceiptPhoto);
 $('receipt-camera').addEventListener('change',receiveReceiptPhoto);
 for(const label of document.querySelectorAll('.photo-actions label[tabindex]')){
  label.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$(label.htmlFor).click();}});
 }
-$('scan').addEventListener('click',scan);$('sample').addEventListener('click',()=>{reset();$('receipt-text').value=sample;parse();});$('parse').addEventListener('click',()=>{reset();parse();});$('confirmed').addEventListener('change',toggleExports);$('store').addEventListener('change',toggleExports);$('purchase-date').addEventListener('change',toggleExports);$('export-csv').addEventListener('click',()=>exportFile('csv'));$('export-json').addEventListener('click',()=>exportFile('json'));$('clear').addEventListener('click',()=>{clean();reset();$('receipt-text').value='';$('progress-section').classList.add('hidden');});
+$('scan').addEventListener('click',scan);$('sample').addEventListener('click',()=>{reset();sampleMode=true;$('receipt-text').value=sample;parse();});$('parse').addEventListener('click',()=>{reset();parse();});$('confirmed').addEventListener('change',toggleExports);$('store').addEventListener('change',()=>{if(parsed){const products=$('items');products.replaceChildren();for(const row of parsed.items)lineEditor(row,products,false);updateSummary();}toggleExports();});$('purchase-date').addEventListener('change',toggleExports);$('export-csv').addEventListener('click',()=>exportFile('csv'));$('export-json').addEventListener('click',()=>exportFile('json'));$('clear').addEventListener('click',()=>{clean();reset();sampleMode=false;$('receipt-text').value='';$('progress-section').classList.add('hidden');});
 })();
 </script>
 <script type="module" src="/receipt-cloud.js"></script>
