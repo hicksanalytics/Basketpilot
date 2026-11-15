@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#123f35">
+<title>Find a Product | BasketPilot</title>
+<style>
+:root{color-scheme:light;--ink:#143c34;--green:#124737;--muted:#4e665c;--paper:#f6f9f3;--line:#d7e4db;--mint:#e8f5e9;--white:#fff}
+*{box-sizing:border-box}
+body{margin:0;background:#e5ede6;color:var(--ink);font:1rem/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.app{max-width:630px;margin:auto;min-height:100dvh;background:var(--paper);box-shadow:0 0 30px #183e3020}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 20px;background:var(--white);border-bottom:1px solid var(--line)}
+.brand{font-size:1.45rem;font-weight:850;letter-spacing:-.05em;text-decoration:none}
+.brand span{color:#a56b48}
+a{color:var(--green);text-underline-offset:3px}
+main{padding:24px 18px 100px}
+h1,h2,h3,p{margin:0}
+h1{font-size:clamp(1.9rem,6vw,2.5rem);line-height:1.1;letter-spacing:-.045em;margin:8px 0}
+h2{font-size:1.1rem}
+h3{font-size:1rem}
+p{margin-top:8px}
+.muted,.price-meta{font-size:.875rem;color:var(--muted)}
+.panel,.product{background:var(--white);border:1px solid var(--line);border-radius:15px;padding:16px;margin-top:14px}
+.panel{margin-top:20px}
+label{display:block;font-size:.875rem;font-weight:700;margin-bottom:6px}
+input,button{font:inherit}
+input{width:100%;min-height:46px;min-width:0;border:1px solid #aebfb2;border-radius:10px;background:var(--white);color:var(--ink);padding:8px 11px;font-size:16px}
+.search-row,.actions{display:flex;gap:8px;align-items:center}
+.actions{flex-wrap:wrap;margin-top:12px}
+button,.button{display:inline-flex;align-items:center;justify-content:center;min-height:44px;border-radius:10px;border:1px solid var(--green);padding:8px 12px;font-size:.875rem;font-weight:750;color:var(--white);background:var(--green);cursor:pointer;text-decoration:none}
+.secondary{color:var(--green);background:var(--mint);border-color:var(--line)}
+button:disabled{opacity:.55;cursor:default}
+:focus-visible{outline:3px solid #398453;outline-offset:3px}
+video{width:100%;max-height:250px;background:var(--green);object-fit:cover;border-radius:10px;margin-top:12px;display:block}
+[hidden]{display:none!important}
+#search-status:empty,#scan-status:empty{display:none}
+#search-results{margin-top:22px;overflow-wrap:anywhere}
+.price-list{margin:10px 0 0;padding:0;list-style:none}
+.price-row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--line);line-height:1.35}
+.price-row strong:last-child{white-space:nowrap}
+.price-meta{display:block;margin-top:3px}
+.account-message{padding:8px 0}
+details{margin-top:12px;font-size:.875rem}
+summary{cursor:pointer;color:var(--green);font-weight:750}
+nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:min(630px,100%);display:flex;justify-content:space-evenly;background:var(--white);border-top:1px solid var(--line);padding:9px 4px max(12px,env(safe-area-inset-bottom));z-index:2}
+nav a{display:flex;align-items:center;justify-content:center;min-height:44px;flex:1;font-size:.76rem;text-decoration:none;font-weight:750}
+nav [aria-current=page]{background:var(--mint);border-radius:9px}
+</style>
+</head>
+<body>
+<div class="app">
+<header><a class="brand" href="/">basketpilot<span>.</span></a><a href="/insights.html">My Prices</a></header>
+<main>
+  <h1>Find a product</h1>
+  <p class="muted">Search by name or scan the package barcode. Compare dated prices from your saved purchases across stores. Live local pricing is unavailable in this preview.</p>
+  <section class="panel" aria-label="Product search">
+    <form id="product-search" role="search">
+      <label for="product-query">Product name or barcode number</label>
+      <div class="search-row">
+        <input id="product-query" type="search" maxlength="120" placeholder="e.g. Ball Park beef franks" autocomplete="off" required>
+        <button type="submit">Search</button>
+      </div>
+    </form>
+    <div class="actions">
+      <button class="secondary" id="start-camera" type="button">Scan barcode</button>
+      <button class="secondary" id="stop-camera" type="button" hidden>Close camera</button>
+    </div>
+    <video id="barcode-camera" aria-label="Barcode camera preview" playsinline muted hidden></video>
+    <p id="scan-status" class="muted" role="status"></p>
+    <p id="account-status" class="muted account-message" role="status">Checking your private receipt history…</p>
+    <a id="sign-in" href="/receipts.html#private-cloud" hidden>Sign in to see your receipts</a>
+    <noscript><p>Product search requires JavaScript.</p></noscript>
+  </section>
+  <section id="search-results" aria-labelledby="results-title" hidden>
+    <h2 id="results-title">Products</h2>
+    <p id="search-status" role="status" class="muted"></p>
+    <div id="product-results"></div>
+  </section>
+  <section class="panel" id="link-panel" aria-labelledby="link-title" hidden>
+    <h2 id="link-title">Link this package barcode</h2>
+    <p id="link-copy" class="muted"></p>
+    <form id="link-search" role="search">
+      <label for="link-query">Name on your receipt</label>
+      <div class="search-row">
+        <input id="link-query" type="search" maxlength="120" placeholder="e.g. beef franks" autocomplete="off" required>
+        <button type="submit">Find purchase</button>
+      </div>
+    </form>
+    <p id="link-status" role="status" class="muted"></p>
+    <div id="link-results"></div>
+  </section>
+</main>
+<nav aria-label="Navigation">
+  <a href="/">Home</a><a href="/#basket">Basket</a><a href="/products.html" aria-current="page">Find</a><a href="/receipts.html">Receipts</a><a href="/insights.html">My Prices</a>
+</nav>
+</div>
+<script src="/price-insights-core.js"></script>
+<script src="/product-lookup-core.js"></script>
+<script type="module" src="/product-lookup.js"></script>
+</body>
+</html>

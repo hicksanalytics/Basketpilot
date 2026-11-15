@@ -6,6 +6,7 @@ A four-retailer grocery savings app prototype, with **separate demo pricing and 
 
 - **`/`** — Fictional grocery basket optimizer demo. All prices here are clearly illustrative.
 - **`/receipts.html`** — Photo/Photos receipt scanning with on-device OCR, verified item-number matching, and opt-in private saving.
+- **`/products.html`** — Search saved purchases by name, type a UPC/EAN, or scan the package barcode. Link an exact package to a saved purchase to compare recorded prices for that package across stores.
 - **`/insights.html`** — Personal receipt analytics: frequent buys, most-recent observed price per store, normalized unit comparisons, historical price charts, and correction of missing pack counts.
 
 ## Security, privacy, and data provenance
@@ -15,6 +16,7 @@ A four-retailer grocery savings app prototype, with **separate demo pricing and 
 - A Supabase **publishable** browser key is included for client requests; it is not a service-role or database-admin credential. All private data is protected by Supabase Auth and RLS.
 - The optional receipt-image upload is private and turned **off by default**.
 - Receipt data does **not** automatically populate public/community retailer price tables. No Scavio API calls are initiated.
+- Product lookup searches the latest 300 private receipts. The camera decodes barcodes on the device. Explicit barcode links stay in the owner's receipt history. The same linked barcode can compare across retailers, while retailer item numbers stay scoped to their retailer.
 - Sample receipts are intentionally blocked from private purchase-history saving.
 - Recorded prices are **historical purchases**, not current store quotes. Comparisons use **unit prices** and show observation dates, stale warnings, and unallocated-discount flags.
 - Receipts without sufficient product/package identity are not used in comparable unit-price rankings.
@@ -28,10 +30,10 @@ Render Static Site (free-tier eligible); branch `main`; publish directory `publi
 Run:
 
 ```sh
-node --test tests/price_insights.test.cjs
+node --test tests/*.cjs
 ```
 
-The suite covers 12/24/60 eggs, count normalization, historical/stale receipts, repeat purchases, unknown counts, coupons, and known Sam's package size.
+The suite covers receipt parsing, count normalization, purchase history, barcode checksums, and exact-package matching across retailers.
 
 ## Future work
 

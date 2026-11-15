@@ -8,7 +8,8 @@ assert 'href="/receipts.html"' in index
 assert 'id="receipt-file"' in page and 'id="receipt-text"' in page
 assert 'Tesseract.createWorker' in page and '7.0.0' in page
 assert 'receipt-parser.js' in page and 'parseReceipt' in parser
-assert 'No data is stored automatically' in page
+assert 'Tapping Save stores parsed purchases in your private account' in page
+assert 'The original image stays on your phone unless you separately opt in' in page
 for source in (page,parser,index):
     for secret in ('SCAVIO_API_KEY', 'service_role', 'sb_secret_', 'vfctfvbufuvmbxnrfmaj', '15183722867', '13627565539'):
         assert secret not in source
