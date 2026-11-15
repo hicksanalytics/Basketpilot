@@ -154,7 +154,7 @@ async function checkAuth(){
 }
 async function signin(create){
  const email=$('email').value.trim().toLowerCase(),password=$('password').value;
- if(!email||password.length<10){report('Enter your email and a password of at least 10 characters.');return;}
+ if(!email||!password||(create&&password.length<10)){report(create?'Enter your email and a password of at least 10 characters.':'Enter your email and password.');return;}
  if(busy)return;busy=true;$('login').disabled=true;$('register').disabled=true;
  report(create?'Creating your account…':'Signing in…');
  try{const result=create?await sb.auth.signUp({email,password,options:{emailRedirectTo:location.origin+'/insights.html'}}):await sb.auth.signInWithPassword({email,password});
