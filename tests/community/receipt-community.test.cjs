@@ -54,8 +54,8 @@ async function observations(id) {
   return rows;
 }
 
-function result(outcome, revision, observation_count) {
-  return { outcome, revision, observation_count };
+function result(outcome, revision, observation_count, eligible_count = null) {
+  return { outcome, revision, observation_count, eligible_count };
 }
 
 before(async () => {
@@ -79,7 +79,7 @@ after(async () => {
 test('a previously saved receipt stays private until the owner explicitly shares it', async () => {
   await addReceipt(1);
   await addItem(1, 11);
-  assert.deepEqual(await consent(1, 'status'), result('status', 0, 0));
+  assert.deepEqual(await consent(1, 'status'), result('status', 0, 0, 1));
   assert.deepEqual(await observations(1), []);
   assert.deepEqual(await consent(1, 'share', 0), result('shared', 1, 1));
   const [row] = await observations(1);
@@ -87,7 +87,7 @@ test('a previously saved receipt stays private until the owner explicitly shares
     receipt_item_id: itemId(11), receipt_id: receiptId(1), retailer: 'fixture',
     store_id: '0101', receipt_item_code: packageCode, purchase_date: '2024-10-01', package_price_cents: 1000
   });
-  assert.deepEqual(await consent(1, 'share', 0), result('stale', 1, 1));
+  assert.deepEqual(await consent(1, 'share', 0), result('stale', 1, 1, 1));
   assert.deepEqual(await consent(1, 'share', 1), result('shared', 1, 1));
   assert.equal((await observations(1)).length, 1);
 });
@@ -97,8 +97,8 @@ test('withdrawal removes the prices and a delayed share cannot restore them', as
   await addItem(2, 21);
   assert.deepEqual(await consent(2, 'share', 0), result('shared', 1, 1));
   assert.deepEqual(await consent(2, 'withdraw', 1), result('withdrawn', 2, 0));
-  assert.deepEqual(await consent(2, 'withdraw', 1), result('stale', 2, 0));
-  assert.deepEqual(await consent(2, 'share', 0), result('stale', 2, 0));
+  assert.deepEqual(await consent(2, 'withdraw', 1), result('stale', 2, 0, 1));
+  assert.deepEqual(await consent(2, 'share', 0), result('stale', 2, 0, 1));
   assert.deepEqual(await observations(2), []);
   assert.deepEqual(await consent(2, 'share', 2), result('shared', 3, 1));
 });
@@ -122,6 +122,8 @@ test('another account, missing identity, and anonymous role cannot use receipt c
 test('owner has no direct access to the observation or allowlist tables', async () => {
   for (const statement of [
     'select * from receipt_community.observations',
+    'select * from receipt_community.eligible_lines',
+    "select * from receipt_community.package_price_history('fixture', '0000000421')",
     'delete from receipt_community.observations',
     "insert into receipt_community.verified_stores values ('fixture', '9999', 'Forged', 'https://example.com')",
     'update receipt_community.verified_packages set package_name = package_name',
@@ -139,7 +141,8 @@ test('unverified locations, unreconciled subtotals, discounts, and invalid dates
     [7, {}],
     [8, { date: null }],
     [9, { date: '2200-01-01' }],
-    [10, { retailer: 'other_fixture' }]
+    [10, { retailer: 'other_fixture' }],
+    [13, { date: '-infinity' }]
   ];
   for (const [id, options] of cases) {
     await addReceipt(id, options);
@@ -148,9 +151,9 @@ test('unverified locations, unreconciled subtotals, discounts, and invalid dates
       await db.query('insert into public.receipt_discounts values ($1, $2)', [itemId(72), receiptId(id)]);
       await db.query('update public.receipts set contribution_opt_in = true where id = $1', [receiptId(id)]);
     }
-    assert.deepEqual(await consent(id, 'status'), result('status', 0, 0));
+    assert.deepEqual(await consent(id, 'status'), result('status', 0, 0, 0));
     assert.deepEqual(await consent(id, 'share', 0), result('ineligible', 1, 0));
-    assert.deepEqual(await consent(id, 'share', 0), result('stale', 1, 0));
+    assert.deepEqual(await consent(id, 'share', 0), result('stale', 1, 0, 0));
     assert.deepEqual(await observations(id), []);
   }
 });
@@ -170,6 +173,8 @@ test('only reviewed, exact package matches with a whole-package cent price are s
     update public.receipt_items set match_status = 'verified',
       matched_title = 'Synthetic package, 24 ct', package_gtin = '00012345678905' where id = $1
   `, [itemId(112)]);
+  assert.deepEqual(await consent(11, 'status'), result('status', 0, 0, 2));
+  assert.deepEqual(await observations(11), []);
   assert.deepEqual(await consent(11, 'share', 0), result('shared', 1, 2));
   assert.deepEqual((await observations(11)).map(row => row.receipt_item_id), [itemId(111), itemId(119)]);
 });
@@ -183,4 +188,37 @@ test('deleting a saved receipt removes its observations and consent revision', a
   const { rows } = await db.query('select * from receipt_community.consent_revisions where receipt_id = $1', [receiptId(12)]);
   assert.deepEqual(rows, []);
   await assert.rejects(consent(12, 'status'), { code: '42501' });
+});
+
+test('package history contains only dated, distinct prices for the exact verified package', async () => {
+  await db.exec(`
+    insert into receipt_community.verified_packages values
+      ('fixture', '0000000900', 'Other synthetic package, 12 ct', 'https://example.com/other');
+  `);
+  const code = '0000000900';
+  for (const [id, date] of [[20, '2024-10-05'], [21, '2024-11-09'], [22, '2024-11-09'], [23, '2024-12-01']]) {
+    await addReceipt(id, { date });
+    await addItem(id, id * 10, { code });
+  }
+  const history = async (retailer = 'fixture', itemCode = code) => {
+    const { rows } = await db.query('select * from receipt_community.package_price_history($1, $2)', [retailer, itemCode]);
+    return rows.map(row => ({ ...row, purchase_date: row.purchase_date.toISOString().slice(0, 10) }));
+  };
+  assert.deepEqual(await history(), []);
+  for (const id of [20, 21, 22]) await consent(id, 'share', 0);
+  const price = date => ({
+    retailer: 'fixture', receipt_item_code: code, package_name: 'Other synthetic package, 12 ct',
+    store_id: '0101', location_name: 'Synthetic store', purchase_date: date, package_price_cents: 1000
+  });
+  const old = price('2024-10-05');
+  const recent = price('2024-11-09');
+  assert.deepEqual(await history(), [recent, old]);
+  assert.deepEqual(await history('other_fixture'), []);
+  assert.deepEqual(await history('fixture', '900'), []);
+  await consent(21, 'withdraw', 1);
+  assert.deepEqual(await history(), [recent, old]);
+  await consent(22, 'withdraw', 1);
+  assert.deepEqual(await history(), [old]);
+  await asAuthenticated(owner, tx => tx.query('delete from public.receipts where id = $1', [receiptId(20)]));
+  assert.deepEqual(await history(), []);
 });
