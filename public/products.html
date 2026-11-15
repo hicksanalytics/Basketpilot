@@ -65,9 +65,10 @@ nav [aria-current=page]{background:var(--mint);border-radius:9px}
     <div class="actions">
       <button class="secondary" id="start-camera" type="button">Scan barcode</button>
       <button class="secondary" id="stop-camera" type="button" hidden>Close camera</button>
+      <button class="secondary" id="type-barcode" type="button">Type barcode</button>
     </div>
     <video id="barcode-camera" aria-label="Barcode camera preview" playsinline muted hidden></video>
-    <p id="scan-status" class="muted" role="status"></p>
+    <div role="status"><p id="scan-status" class="muted"></p></div>
     <p id="account-status" class="muted account-message" role="status">Checking your private receipt history…</p>
     <a id="sign-in" href="/receipts.html#private-cloud" hidden>Sign in to see your receipts</a>
     <noscript><p>Product search requires JavaScript.</p></noscript>

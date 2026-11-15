@@ -211,10 +211,18 @@ function stopCamera(message = '') {
   $('scan-status').textContent = message;
 }
 
+function typeBarcode() {
+  stopCamera('Enter the digits printed under the barcode.');
+  const input = $('product-query');
+  input.inputMode = 'numeric';
+  input.focus();
+  input.select();
+}
+
 async function startCamera() {
   if (camera) return;
   if (!navigator.mediaDevices?.getUserMedia) {
-    $('scan-status').textContent = 'Camera scanning is unavailable here. Enter the digits below the barcode.';
+    $('scan-status').textContent = 'Camera scanning is unavailable here. Choose Type barcode to continue.';
     return;
   }
   const scan = {};
@@ -248,14 +256,18 @@ async function startCamera() {
     });
     if (camera === scan) scan.controls = controls;
     else stopDecoding(controls);
-  } catch {
-    if (camera === scan) stopCamera('Could not scan with the camera. Allow camera access or enter the barcode number.');
+  } catch (error) {
+    if (camera !== scan) return;
+    let message = 'Could not scan with the camera.';
+    if (error?.name === 'NotAllowedError') message = 'Camera access was blocked.';
+    if (error?.name === 'NotFoundError') message = 'No camera was found.';
+    stopCamera(message + ' Choose Type barcode to continue.');
   }
 }
 
 $('product-search').addEventListener('submit', event => {
   event.preventDefault();
-  if (camera) stopCamera();
+  stopCamera();
   setResultQuery($('product-query').value);
 });
 $('link-search').addEventListener('submit', event => {
@@ -263,6 +275,8 @@ $('link-search').addEventListener('submit', event => {
   showCandidates();
 });
 $('start-camera').addEventListener('click', startCamera);
+$('type-barcode').addEventListener('click', typeBarcode);
+$('product-query').addEventListener('blur', event => event.currentTarget.removeAttribute('inputmode'));
 $('stop-camera').addEventListener('click', () => stopCamera());
 window.addEventListener('pagehide', () => stopCamera());
 document.addEventListener('visibilitychange', () => {
