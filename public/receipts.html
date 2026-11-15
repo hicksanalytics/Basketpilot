@@ -160,7 +160,7 @@ function receiveReceiptPhoto(e){
  status((selected.name||'Receipt photo')+' · '+(selected.size/1024/1024).toFixed(1)+' MB · Reading automatically…');setTimeout(()=>{if(file===selected)scan();},0);
 }
 window.BasketPilotReceiptBridge={getPayload:()=>({valid:!!valid(),parsed,retailer:$('store').value,storeId:$('store-id').value.trim(),purchaseDate:$('purchase-date').value,file,isSample:sampleMode})};
-$('quick-save').addEventListener('click',()=>{if(!valid()){message('Correct missing receipt fields first.');return;}if(!window.BasketPilotCloud?.saveOrPrompt){message('Private account connection is loading. Try again.');return;}window.BasketPilotCloud.saveOrPrompt();});
+$('quick-save').addEventListener('click',()=>{if(sampleMode){message('The sample is fictional and cannot enter your personal price history. Choose a real receipt first.');return;}if(!valid()){message('Correct missing receipt fields first.');return;}if(!window.BasketPilotCloud?.saveOrPrompt){message('Private account connection is loading. Try again.');return;}window.BasketPilotCloud.saveOrPrompt();});
 $('receipt-file').addEventListener('change',receiveReceiptPhoto);
 $('receipt-camera').addEventListener('change',receiveReceiptPhoto);
 for(const label of document.querySelectorAll('.photo-actions label[tabindex]')){
