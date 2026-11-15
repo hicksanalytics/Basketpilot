@@ -30,12 +30,20 @@ function inferMetadata(row){
  if(!group)return {group:null,units:null,unit:null,source:null};
  const unit=groupInfo(group).unit;
  let units=null,source=null;
+ const knownPack={
+  "sams|0990559143":{group:"paper_towels",qty:1788,unit:"sheet"},
+  "sams|0000866624":{group:"oatmeal",qty:52,unit:"packet"},
+  "sams|0000385385":{group:"hot_dogs",qty:24,unit:"count"},
+  "sams|0990420247":{group:"sausage_links",qty:48,unit:"count"}
+ };
+ const known=knownPack[String(row.retailer||"")+"|"+String(row.retailer_item_code||row.sku||"")];
+ if(known&&known.group===group){units=known.qty;source="verified_catalog";}
  const catalogQty=Number(row.catalogPackQty??row.catalog_pack_qty);
- if(Number.isFinite(catalogQty)&&catalogQty>0&&String(row.catalogPackUnit??row.catalog_pack_unit??"").toLowerCase()===unit){units=catalogQty;source="verified_catalog";}
+ if(units===null&&Number.isFinite(catalogQty)&&catalogQty>0&&String(row.catalogPackUnit??row.catalog_pack_unit??"").toLowerCase()===unit){units=catalogQty;source="verified_catalog";}
  if(units===null){
   if(group==="eggs"){
-   const m=s.match(/\b(?:6|12|18|24|30|36|48|60)\s*(?:CT|COUNT|PK|PACK|EGGS)\b/)||s.match(/\bEGGS?\b[^\d]{0,18}\b(?:6|12|18|24|30|36|48|60)\b/);
-   if(m){const n=m[0].match(/6|12|18|24|30|36|48|60/);units=Number(n[0]);source="receipt_inferred";}
+   const m=s.match(/\b(?:60|48|36|30|24|18|12|6)\s*(?:CT|COUNT|PK|PACK|EGGS)\b/)||s.match(/\bEGGS?\b[^\d]{0,18}\b(?:6|12|18|24|30|36|48|60)\b/);
+   if(m){const n=m[0].match(/\d+/);units=Number(n[0]);source="receipt_inferred";}
    else if(/\b2\s*DOZ(?:EN)?\b/.test(s)){units=24;source="receipt_inferred";}
    else if(/\b(?:1\s*)?DOZ(?:EN)?\b/.test(s)){units=12;source="receipt_inferred";}
   }else if(group==="milk"){
@@ -43,7 +51,7 @@ function inferMetadata(row){
    else if(/\b(?:1\s*)?GAL(?:LON)?\b/.test(s)){units=128;source="receipt_inferred";}
    else {const m=s.match(/\b(16|32|64|96|128)\s*(?:FL\s*OZ|FLOZ)\b/);if(m){units=Number(m[1]);source="receipt_inferred";}}
   }else if(group==="paper_towels"){
-   const m=s.match(/\b(\d{2,5})\s*SHEETS?\b/);if(m){units=Number(m[1]);source="receipt_inferred";}
+   const m=/SHEETS?\s*\/\s*ROLL/i.test(s)?null:s.match(/\b(\d{2,5})\s*SHEETS?\b/);if(m){units=Number(m[1]);source="receipt_inferred";}
   }else{
    const m=s.match(/\b(\d{1,4})\s*(?:CT|COUNT)\b/);if(m){units=Number(m[1]);source="receipt_inferred";}
   }
@@ -51,7 +59,7 @@ function inferMetadata(row){
  return {group,units,unit,source};
 }
 function priceObservation(receipt,item){
- const guessed=inferMetadata(item),group=String(item.analytics_group||guessed.group||""),info=groupInfo(group);
+ const guessed=inferMetadata({...item,retailer:receipt.retailer}),group=String(item.analytics_group||guessed.group||""),info=groupInfo(group);
  if(!info)return null;
  const pack=Number(item.package_units??guessed.units),unit=String(item.unit_kind||guessed.unit||"");
  const qty=Number(item.quantity),paid=Number(item.gross_line_total),date=String(receipt.purchase_date||"").slice(0,10);
