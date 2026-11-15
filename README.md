@@ -41,6 +41,8 @@ The SQL in `supabase/drafts/receipt_community.sql` runs against a synthetic Post
 
 Eligibility requires a reviewed line, an exact retailer item code and store ID in independently curated lists, and a reconciled subtotal. Receipts with discounts are excluded until their impact can be determined. A store ID match identifies the location recorded on the receipt. The receipt itself is shopper-supplied.
 
+See [Middle Tennessee community catalog evidence](docs/community-catalog-evidence.md) for example store and item IDs, gaps in receipt-format evidence, and examples where the orderable package matters.
+
 ```sh
 npm ci --prefix tests/community --ignore-scripts
 npm --prefix tests/community test

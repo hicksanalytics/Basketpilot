@@ -6,6 +6,7 @@ const { before, after, test } = require('node:test');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { PGlite } = require('@electric-sql/pglite');
 const { JSDOM } = require('jsdom');
+const { buildProductPage, readCommunityPrices } = require('./product-page-fixture.cjs');
 
 const read = file => fs.readFileSync(path.join(__dirname, '../..', file), 'utf8');
 const owner = '10000000-0000-0000-0000-000000000001';
@@ -137,10 +138,10 @@ function build(t, { sharing = true, signedIn = true } = {}) {
 
   function review(date = '10/10/2024') {
     byId('receipt-text').value = [
-      "SAM'S CLUB", date, code + ' FIXTURE PRODUCT 20.00', 'SUBTOTAL 20.00', 'TOTAL 20.00'
+      "SAM'S CLUB", date + ' 14:05 1047 ' + store + ' 07', code + ' FIXTURE PRODUCT 20.00', 'SUBTOTAL 20.00', 'TOTAL 20.00'
     ].join('\n');
     byId('parse').click();
-    byId('store-id').value = store;
+    assert.equal(byId('store-id').value, store);
     assert.equal(window.BasketPilotReceiptBridge.getPayload().valid, true);
   }
 
@@ -261,6 +262,7 @@ test('history hides sharing for an ineligible receipt and reports stale consent 
   const ineligible = panelIn(cardOn('2024-11-03'));
   ineligible.querySelector('summary').click();
   await until(() => ineligible.textContent.includes('No item prices qualify'), 'Ineligible receipt should explain sharing is unavailable');
+  assert.match(ineligible.textContent, /exact package match, a known store/);
   assert.ok(ineligible.querySelector('button').classList.contains('hidden'));
 
   const eligible = panelIn(cardOn('2024-11-02'));
@@ -272,4 +274,61 @@ test('history hides sharing for an ineligible receipt and reports stale consent 
   assert.match(eligible.textContent, /Sharing changed elsewhere/);
   assert.equal(await countObservations(eligibleId), 1);
   assert.deepEqual(controls.operations.filter(op => op.id === eligibleId).map(op => op.action), ['status', 'share']);
+});
+
+test('an opt-in on receipt review appears in signed-out product search and a history withdrawal removes it', async t => {
+  const receiptCode = '0000000954';
+  const title = 'Synthetic pantry oats, 52 packets';
+  const price = '13.46';
+  await db.query('insert into receipt_community.verified_packages values ($1,$2,$3,$4)',
+    ['sams', receiptCode, title, 'https://example.com/oats']);
+  const receiptPage = build(t);
+  const productPage = buildProductPage(t, { request: input => readCommunityPrices(db, input) });
+  const { byId, window, controls } = receiptPage;
+  await until(() => !byId('cloud-signed-in').classList.contains('hidden'), 'Receipt owner should be signed in');
+  await until(() => !productPage.byId('sign-in').hidden, 'Search should be signed out');
+
+  byId('receipt-text').value = [
+    "SAM'S CLUB", '10/27/2024 14:05 1047 0101 07',
+    receiptCode + ' PRIVATE FIXTURE LABEL ' + price,
+    'SUBTOTAL ' + price, 'TOTAL ' + price
+  ].join('\n');
+  byId('parse').click();
+  const payload = window.BasketPilotReceiptBridge.getPayload();
+  assert.equal(payload.storeId, '0101');
+  assert.equal(payload.parsed.items[0].sku, receiptCode);
+  byId('quick-save').click();
+  await until(() => !byId('review-community').hidden, 'Review sharing panel should appear');
+  const reviewPanel = panelIn(byId('review-community'));
+  const share = await action(reviewPanel, 'Share 1 item price');
+
+  const sharedPrices = productPage.byId('community-prices');
+  const searchStatus = productPage.byId('community-status');
+  const query = 'pantry oats';
+  productPage.search(query);
+  await until(() => searchStatus.textContent.includes('No shared receipt prices'), 'Private save should not appear in guest search');
+  assert.equal(sharedPrices.children.length, 0);
+  share.click();
+  await action(reviewPanel, 'Withdraw shared prices');
+
+  productPage.search(query);
+  await until(() => sharedPrices.textContent.includes(price), 'Consented price should appear in guest search');
+  assert.equal(sharedPrices.querySelector('h3').textContent, title);
+  assert.equal(sharedPrices.querySelector('time').dateTime, '2024-10-27');
+  assert.match(sharedPrices.textContent, /Synthetic club.*\$13\.46 per package/);
+  assert.doesNotMatch(sharedPrices.textContent, /PRIVATE FIXTURE LABEL/);
+
+  const history = byId('cloud-history');
+  await until(() => history.textContent.includes('2024-10-27'), 'Saved receipt should be available in history');
+  const card = [...history.children].find(row => row.textContent.includes('2024-10-27'));
+  const historyPanel = panelIn(card);
+  historyPanel.querySelector('summary').click();
+  (await action(historyPanel, 'Withdraw shared prices')).click();
+  await action(historyPanel, 'Check eligible prices');
+
+  productPage.search(query);
+  await until(() => searchStatus.textContent.includes('No shared receipt prices'), 'Withdrawal should remove the price from guest search');
+  assert.equal(sharedPrices.children.length, 0);
+  assert.deepEqual((await db.query('select id from receipts where id = $1', [controls.lastSaved])).rows,
+    [{ id: controls.lastSaved }]);
 });

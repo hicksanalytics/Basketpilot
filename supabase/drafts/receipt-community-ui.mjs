@@ -45,7 +45,7 @@ export function createReceiptCommunity(request) {
       } else {
         status.textContent = data.eligible_count
           ? label(data.eligible_count) + ' can be shared.'
-          : 'No item prices qualify for sharing.';
+          : 'No item prices qualify for sharing. Eligible lines need an exact package match, a known store, and a receipt subtotal that adds up without discounts.';
       }
     }
 
