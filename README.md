@@ -1,10 +1,42 @@
-# BasketPilot
+# BasketPilot — Cloud Development Preview
 
-Four-retailer grocery savings platform in development.
+A four-retailer grocery savings app prototype, with **separate demo pricing and real owner-only receipt analytics**.
 
-This repository hosts a **fictional-data-only static preview**. No Scavio credentials, private price observations, customer data, or retailer API responses are included. Live price collection is off; Supabase development data is separate.
+## Screens
 
-## Hosting
-Render Static Site on free eligible plan; build command `echo preview`; publish path `public`; branch `main`.
+- **`/`** — Fictional grocery basket optimizer demo. All prices here are clearly illustrative.
+- **`/receipts.html`** — Photo/Photos receipt scanning with on-device OCR, verified item-number matching, and opt-in private saving.
+- **`/insights.html`** — Personal receipt analytics: frequent buys, most-recent observed price per store, normalized unit comparisons, historical price charts, and correction of missing pack counts.
 
-Future work: cloud product matching, authenticated user shopping baskets, and properly licensed price feeds.
+## Security, privacy, and data provenance
+
+- Saved receipts, line items, discounts, and user account access are in the existing Supabase development database. **Row-level security limits access to the receipt owner.**
+- No personal receipt data or customer information is committed to GitHub, embedded in the static site, or used for demo pricing.
+- A Supabase **publishable** browser key is included for client requests; it is not a service-role or database-admin credential. All private data is protected by Supabase Auth and RLS.
+- The optional receipt-image upload is private and turned **off by default**.
+- Receipt data does **not** automatically populate public/community retailer price tables. No Scavio API calls are initiated.
+- Sample receipts are intentionally blocked from private purchase-history saving.
+- Recorded prices are **historical purchases**, not current store quotes. Comparisons use **unit prices** and show observation dates, stale warnings, and unallocated-discount flags.
+- Receipts without sufficient product/package identity are not used in comparable unit-price rankings.
+
+## Launch and operations
+
+Render Static Site (free-tier eligible); branch `main`; publish directory `public`; no build dependencies. Static site updates use source commits. This app does not require a Windows computer to host.
+
+## Analytics test suite
+
+Run:
+
+```sh
+node --test tests/price_insights.test.cjs
+```
+
+The suite covers 12/24/60 eggs, count normalization, historical/stale receipts, repeat purchases, unknown counts, coupons, and known Sam's package size.
+
+## Future work
+
+- Add explicit receipt-image privacy controls and straightforward account onboarding.
+- Grow verified retailer SKU-to-product matching and catalog coverage.
+- Improve allocation of discounts to exact purchased items after validation.
+- Obtain appropriate commercial price-data rights before community aggregation and subscriptions.
+- Add current, store-specific price feeds so the app can eventually answer **where eggs are cheapest today**, rather than only comparing past purchase prices.
