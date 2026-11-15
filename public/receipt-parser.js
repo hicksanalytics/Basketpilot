@@ -1,4 +1,4 @@
-/* BasketPilot v0.7 receipt parser. 100% local; no network, no storage, no exact-product matches. */
+/* BasketPilot v0.8: local OCR parser. Product matches require verification. */
 (function (root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;
@@ -10,9 +10,9 @@
     costco: 'Costco', sams: "Sam's Club", publix: 'Publix', kroger: 'Kroger'
   };
   const moneyRE = '(-?\\$?\\d{1,5}\\.\\d{2}-?)';
-  const moneyEnding = new RegExp('^(.+?)\\s+' + moneyRE + '(?:\\s+[A-Z]{1,2})?\\s*$');
+  const moneyEnding = new RegExp('^(.+?)\\s+' + moneyRE + '(?:\\s*-?[A-Z]{1,2})?\\s*$');
   const controlRE = /(?:^|\s)(?:sub\s*total|subtotal|tax|sales tax|total|balance|amount due|tender|payment|visa|mastercard|debit|credit card|change|cash|authorization|transaction|trans(?:action)?\s*#|receipt\s*#|member(?:ship)?\s*(?:number|id|#)|loyalty|gift card|thank you|cashier|savings summary|phone|store\s*#|you saved)(?:\s|$|:)/i;
-  const discountRE = /\b(?:coupon|bogo|discount|savings|save[d]?|digital deal|weekly ad|promotion|promo|mfr|rewards redeemed|reward adjustment|store credit)\b/i;
+  const discountRE = /\b(?:coupon|bogo|discount|savings|save[d]?|digital deal|weekly ad|promotion|promo|mfr|rewards redeemed|reward adjustment|store credit|inst\s+sv)\b/i;
 
   function cleanLine(line) {
     return String(line || '').replace(/[\u00a0\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, 180);
@@ -52,10 +52,17 @@
       const value=parseMoney(m[2]);if(value===null||value<0)continue;
       const prefix=m[1].toUpperCase().replace(/[:*]/g,'').trim();
       if(/^SUB\s*TOTAL$|^SUBTOTAL$/.test(prefix))out.subtotal=value;
-      else if(/^(?:SALES\s+)?TAX$/.test(prefix))out.tax=value;
+      else if(/^(?:SALES\s+)?TAX(?:\s+\d+\s+[\d.]+\s*%?)?$/.test(prefix))out.tax=Number(((out.tax||0)+value).toFixed(2));
       else if(/^(?:GRAND\s+)?TOTAL$|^TOTAL\s+DUE$|^AMOUNT\s+DUE$|^BALANCE\s+DUE$/.test(prefix))out.total=value;
     }
     return out;
+  }
+  function extractStoreId(text, retailer) {
+    if (retailer !== 'sams') return '';
+    // Sam's register header: date, time, register transaction, club number, lane.
+    const head = String(text || '').slice(0, 1200);
+    const m = head.match(/\b\d{1,2}\/\d{1,2}\/\d{2,4}\s+\d{1,2}:\d{2}\s+\d{1,8}\s+(\d{4})\s+\d{1,3}\b/);
+    return m ? m[1] : '';
   }
   function parseLine(line, index) {
     const m=line.match(moneyEnding);
@@ -105,10 +112,10 @@
     warnings.push('Product identities are not catalog-verified; do not use these amounts as public store prices.');
     return {
       retailer:detectRetailer(raw), retailerName:stores[detectRetailer(raw)]||'Unknown retailer',
-      purchasedOn:extractDate(raw), ...summary, items, discounts, recognizedLines:parsed.length,
+      purchasedOn:extractDate(raw), storeId:extractStoreId(raw,detectRetailer(raw)), ...summary, items, discounts, recognizedLines:parsed.length,
       sourceLineCount:lines.length, parsedGross:Number(gross.toFixed(2)), parsedDiscounts:Number(savings.toFixed(2)),
       computedNet:net, subtotalDelta:diff, warnings, saved:false, catalogMatched:false,
     };
   }
-  return {parseReceipt,parseLine,parseMoney,detectRetailer,extractDate,stores};
+  return {parseReceipt,parseLine,parseMoney,detectRetailer,extractDate,extractStoreId,stores};
 });
