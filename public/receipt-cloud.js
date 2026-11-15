@@ -58,6 +58,7 @@ async function save(){if(!state.user){status('Sign in before saving.');return;}l
    else{const update=await sb.from('receipts').update({photo_path:path}).eq('id',receiptId);if(update.error){await sb.storage.from('basketpilot-receipt-images').remove([path]);imageNote=' Image link failed; the image was removed.';}}
  }
  status('Saved '+itemRows.length+' items and '+data.discounts.length+' discounts privately.'+(data.reconciled?' Subtotal reconciled.':' Subtotal needs review.')+' View your updated product trends in My Prices. No community sharing.'+imageNote);
+ $('receipt-view-insights').classList.remove('hidden');
  await loadHistory();
  }catch(err){if(receiptId){const rollback=await sb.from('receipts').delete().eq('id',receiptId);status(rollback.error?'Save failed; a partial receipt may remain. Check history. ':'Save failed; no receipt was kept. '+readableError(err));}else status('Save failed: '+readableError(err));}
  finally{busy(false);}}
