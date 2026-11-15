@@ -29,15 +29,15 @@
    <p class="muted photo-hint">On iPhone, choose an existing receipt from Photos or take a picture. Scanning starts automatically. Maximum 15 MB. If HEIC does not work, select a screenshot or JPG/PNG version.</p>
    <img id="photo-preview" class="preview hidden" alt="Receipt image preview">
    <p class="status" id="photo-status" role="status">No image selected.</p>
-   <div class="buttons"><button type="button" class="button secondary" id="scan" disabled>Retry scan</button><button type="button" class="button secondary" id="sample">Try a sample receipt</button></div>
+   <div class="buttons"><button type="button" class="button secondary" id="scan" disabled>Retry scan</button><button type="button" class="button secondary" id="sample">Try a sample receipt</button><button type="button" class="button ghost" id="paste-receipt">Paste receipt text</button></div>
    <div class="hidden" id="progress-section"><progress id="scan-progress" max="100" value="0"></progress><p class="status" id="scan-status" aria-live="polite">Preparing OCR…</p></div>
    <div class="privacy"><b>Private by default.</b> OCR runs on your device. Tapping Save stores parsed purchases in your private account. The original image stays on your phone unless you separately opt in to storing it. BasketPilot never publishes your receipt or automatically contributes its prices to the community database. OCR software loads from a CDN.</div>
   </section>
-  <details class="card advanced-tools" aria-labelledby="text-title">
+  <details class="card advanced-tools" id="receipt-text-editor" aria-labelledby="text-title">
    <summary id="text-title">Need to fix a scan? Open receipt text editor</summary>
-   <p class="muted">If OCR missed an item, correct the text here and tap Re-parse. Only you can see this text until you choose to save.</p>
-   <div class="field"><label for="receipt-text">Recognized receipt text</label><textarea id="receipt-text" rows="6" placeholder="PUBLIX&#10;MILK WHOLE 4.29&#10;BREAD 3.49&#10;SUBTOTAL 7.78"></textarea></div>
-   <button class="button secondary" type="button" id="parse">Re-parse edited text</button>
+   <p class="muted">Paste text from a digital receipt or correct a photo scan, then review the receipt. The text stays on this device until you save.</p>
+   <div class="field"><label for="receipt-text">Receipt text</label><textarea id="receipt-text" required rows="6" placeholder="PUBLIX&#10;MILK WHOLE 4.29&#10;BREAD 3.49&#10;SUBTOTAL 7.78"></textarea></div>
+   <button class="button secondary" type="button" id="parse">Review receipt text</button>
   </details>
   <section class="results hidden" id="results" aria-labelledby="results-title">
    <div class="card">
@@ -136,28 +136,107 @@ function exportFile(format){if(!valid()){message('Choose the retailer and purcha
  else{const rows=[['retailer','purchase_date','kind','description','retailer_item_id','quantity','line_paid_usd','catalog_matched','public_price_verified']];for(const x of data.items)rows.push([data.retailer,data.purchaseDate,'item',x.description,x.retailerItemId,x.quantity,x.linePaid,'false','false']);for(const d of data.unallocatedDiscounts)rows.push([data.retailer,data.purchaseDate,'unallocated_discount',d.description,'','',d.amount,'false','false']);makeBlob(rows.map(r=>r.map(csvEscape).join(',')).join('\r\n'),'text/csv',stem+'.csv');}
  message('Export downloaded to your device. No receipt data was uploaded or saved to BasketPilot.');}
 function showProgress(messageText,percent){$('progress-section').classList.remove('hidden');$('scan-status').textContent=messageText;$('scan-progress').value=Math.min(100,Math.round(percent*100));}
-let loadPromise=null;
-function loadOCR(){if(window.Tesseract)return Promise.resolve();if(loadPromise)return loadPromise;loadPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js';script.crossOrigin='anonymous';script.onload=()=>window.Tesseract?resolve():reject(new Error('OCR library did not initialize'));script.onerror=()=>reject(new Error('OCR library could not be downloaded'));document.head.appendChild(script);});return loadPromise;}
-async function scan(){if(busy||!file)return;busy=true;$('scan').disabled=true;$('sample').disabled=true;toggleExports();let worker;
- try{showProgress('Downloading OCR engine, if needed…',.02);await loadOCR();worker=await window.Tesseract.createWorker('eng',1,{logger:x=>{if(x&&x.status){showProgress(x.status+(x.progress?' '+Math.round(x.progress*100)+'%':''),x.progress||.1);}}});showProgress('Recognizing receipt text on this device…',.2);const result=await worker.recognize(file);$('receipt-text').value=result?.data?.text||'';parse();showProgress('Scan complete. Please review every item.',1);}
- catch(error){showProgress('Scan could not finish. You can paste receipt text or use the sample instead.',0);status('OCR error: '+(error&&error.message?error.message:'Unknown error'));}
- finally{if(worker)try{await worker.terminate();}catch(e){}busy=false;$('scan').disabled=!file;$('sample').disabled=false;toggleExports();}
+let loadPromise=null,scanRequest=null,scanRunning=false;
+function loadOCR(){
+ if(window.Tesseract)return Promise.resolve();
+ if(!loadPromise){
+  loadPromise=new Promise((resolve,reject)=>{
+   const script=document.createElement('script');
+   script.src='https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js';
+   script.crossOrigin='anonymous';
+   script.onload=()=>window.Tesseract?resolve():reject(new Error('OCR library did not initialize'));
+   script.onerror=()=>reject(new Error('OCR library could not be downloaded'));
+   document.head.appendChild(script);
+  }).catch(error=>{loadPromise=null;throw error;});
+ }
+ return loadPromise;
+}
+function setScanBusy(value){
+ busy=value;
+ $('scan').disabled=busy||!file;
+ $('sample').disabled=busy;
+ toggleExports();
+}
+function cancelScan(){
+ scanRequest=null;
+ setScanBusy(false);
+ $('progress-section').classList.add('hidden');
+}
+function scan(){
+ if(busy||!file)return;
+ scanRequest={photo:file};
+ setScanBusy(true);
+ if(scanRunning){
+  showProgress('Getting ready to scan your new photo…',0);
+ }else{
+  runScan(scanRequest);
+ }
+}
+async function runScan(request){
+ scanRunning=true;
+ let worker;
+ try{
+  showProgress('Downloading OCR engine, if needed…',.02);
+  await loadOCR();
+  if(scanRequest!==request)return;
+  worker=await window.Tesseract.createWorker('eng',1,{logger:update=>{
+   if(scanRequest===request&&update?.status){
+    showProgress(update.status+(update.progress?' '+Math.round(update.progress*100)+'%':''),update.progress||.1);
+   }
+  }});
+  if(scanRequest!==request)return;
+  showProgress('Recognizing receipt text on this device…',.2);
+  const result=await worker.recognize(request.photo);
+  if(scanRequest!==request)return;
+  const receiptText=result?.data?.text||'';
+  if(!receiptText.trim()){
+   showProgress('No text found. Try a clearer photo or tap Paste receipt text.',0);
+   return;
+  }
+  $('receipt-text').value=receiptText;
+  parse();
+  showProgress('Scan complete. Please review every item.',1);
+ }catch{
+  if(scanRequest===request){
+   showProgress('Scan could not finish. Try again or tap Paste receipt text.',0);
+  }
+ }finally{
+  if(worker)try{await worker.terminate();}catch{}
+  scanRunning=false;
+  if(scanRequest===request){
+   scanRequest=null;
+   setScanBusy(false);
+  }else if(scanRequest){
+   runScan(scanRequest);
+  }
+ }
+}
+function openReceiptText(){
+ if(busy)cancelScan();
+ if(sampleMode){
+  clean();reset();sampleMode=false;
+  $('receipt-text').value='';
+ }
+ $('receipt-text-editor').open=true;
+ $('receipt-text').focus();
 }
 function receiveReceiptPhoto(e){
  const selected=e.target.files&&e.target.files[0];
- clean();reset();sampleMode=false;
  if(!selected)return;
+ e.target.value='';
  const imageType=(selected.type||'').toLowerCase();
  const imageName=(selected.name||'').toLowerCase();
  if(!(imageType.startsWith('image/')||/\.(jpe?g|png|webp|heic|heif|gif)$/.test(imageName))){status('Please select a receipt image from Photos or Files.');return;}
  if(selected.size>15*1024*1024){status('Image too large. Please choose an image smaller than 15 MB.');return;}
+ cancelScan();clean();reset();sampleMode=false;
+ $('receipt-text').value='';
  file=selected;objectURL=URL.createObjectURL(selected);
  const preview=$('photo-preview');
  preview.onload=()=>{preview.classList.remove('hidden');};
  preview.onerror=()=>{preview.classList.add('hidden');status('Photo selected, but this format cannot be previewed here. Try a JPG/PNG image or a screenshot of the receipt.');};
  preview.src=objectURL;
- $('scan').disabled=false;
- status((selected.name||'Receipt photo')+' · '+(selected.size/1024/1024).toFixed(1)+' MB · Reading automatically…');setTimeout(()=>{if(file===selected)scan();},0);
+ status((selected.name||'Receipt photo')+' · '+(selected.size/1024/1024).toFixed(1)+' MB');
+ scan();
 }
 window.BasketPilotReceiptBridge={getPayload:()=>({valid:!!valid(),parsed,retailer:$('store').value,storeId:$('store-id').value.trim(),purchaseDate:$('purchase-date').value,file,isSample:sampleMode})};
 $('quick-save').addEventListener('click',()=>{if(sampleMode){message('The sample is fictional and cannot enter your personal price history. Choose a real receipt first.');return;}if(!valid()){message('Correct missing receipt fields first.');return;}if(!window.BasketPilotCloud?.saveOrPrompt){message('Private account connection is loading. Try again.');return;}window.BasketPilotCloud.saveOrPrompt();});
@@ -166,7 +245,17 @@ $('receipt-camera').addEventListener('change',receiveReceiptPhoto);
 for(const label of document.querySelectorAll('.photo-actions label[tabindex]')){
  label.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$(label.htmlFor).click();}});
 }
-$('scan').addEventListener('click',scan);$('sample').addEventListener('click',()=>{reset();sampleMode=true;$('receipt-text').value=sample;parse();});$('parse').addEventListener('click',()=>{reset();parse();});$('confirmed').addEventListener('change',toggleExports);$('store').addEventListener('change',()=>{if(parsed){const products=$('items');products.replaceChildren();for(const row of parsed.items)lineEditor(row,products,false);updateSummary();}toggleExports();});$('purchase-date').addEventListener('change',toggleExports);$('export-csv').addEventListener('click',()=>exportFile('csv'));$('export-json').addEventListener('click',()=>exportFile('json'));$('clear').addEventListener('click',()=>{clean();reset();sampleMode=false;$('receipt-text').value='';$('progress-section').classList.add('hidden');});
+$('scan').addEventListener('click',scan);
+$('paste-receipt').addEventListener('click',openReceiptText);
+$('sample').addEventListener('click',()=>{cancelScan();clean();reset();sampleMode=true;$('receipt-text').value=sample;parse();});
+const receiptTextField=$('receipt-text');
+receiptTextField.addEventListener('input',()=>{if(busy)cancelScan();});
+$('parse').addEventListener('click',()=>{
+ if(!receiptTextField.value.trim())receiptTextField.value='';
+ if(!receiptTextField.reportValidity())return;
+ cancelScan();reset();parse();
+});
+$('confirmed').addEventListener('change',toggleExports);$('store').addEventListener('change',()=>{if(parsed){const products=$('items');products.replaceChildren();for(const row of parsed.items)lineEditor(row,products,false);updateSummary();}toggleExports();});$('purchase-date').addEventListener('change',toggleExports);$('export-csv').addEventListener('click',()=>exportFile('csv'));$('export-json').addEventListener('click',()=>exportFile('json'));$('clear').addEventListener('click',()=>{cancelScan();clean();reset();sampleMode=false;$('receipt-text').value='';});
 })();
 </script>
 <script type="module" src="/receipt-cloud.js"></script>
