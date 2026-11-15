@@ -70,7 +70,7 @@ let file=null,objectURL=null,parsed=null,busy=false;
 const sample=`PUBLIX\n11/14/2026\n2 X RAOS MARINARA 17.98\nBOGO SAVINGS -8.99\nMILK WHOLE GALLON 4.29\nSTRAWBERRIES 3.99\nSUBTOTAL 17.27\nTAX 0.00\nTOTAL 17.27`;
 function status(message){$('photo-status').textContent=message;}
 function message(message){$('finalstatus').textContent=message;}
-function clean(){if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null;}file=null;$('receipt-file').value='';$('receipt-camera').value='';$('photo-preview').src='';$('photo-preview').classList.add('hidden');$('scan').disabled=true;status('No image selected.');}
+function clean(){if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null;}file=null;$('receipt-file').value='';$('receipt-camera').value='';const preview=$('photo-preview');preview.onload=null;preview.onerror=null;preview.removeAttribute('src');preview.classList.add('hidden');$('scan').disabled=true;status('No image selected.');}
 function reset(){parsed=null;$('results').classList.add('hidden');$('confirmed').checked=false;toggleExports();message('');}
 function toggleExports(){const enabled=!!parsed&&parsed.items.length>0&&$('confirmed').checked&&!busy;$('export-csv').disabled=!enabled;$('export-json').disabled=!enabled;}
 function el(tag,props={},parent){const node=document.createElement(tag);for(const [key,value] of Object.entries(props)){if(key==='text')node.textContent=value;else if(key==='class')node.className=value;else node.setAttribute(key,String(value));}if(parent)parent.appendChild(node);return node;}
