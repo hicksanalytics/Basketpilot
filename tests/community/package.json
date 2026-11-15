@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "scripts": {
+    "test": "node --test receipt-community.test.cjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.16"
+  }
+}

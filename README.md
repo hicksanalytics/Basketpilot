@@ -35,6 +35,19 @@ node --test tests/*.cjs
 
 The suite covers receipt parsing, count normalization, purchase history, barcode checksums, and exact-package matching across retailers.
 
+## Community receipt draft
+
+The SQL in `supabase/drafts/receipt_community.sql` runs against a synthetic PostgreSQL fixture. It stores one historical package-price observation per eligible receipt line after explicit owner consent. Withdrawing or deleting the receipt removes its observations. A consent revision prevents a delayed retry from undoing withdrawal.
+
+Eligibility requires a reviewed line, an exact retailer item code and store ID in independently curated lists, and a reconciled subtotal. Receipts with discounts are excluded until their impact can be determined. A store ID match identifies the location recorded on the receipt. The receipt itself is shopper-supplied.
+
+```sh
+npm ci --prefix tests/community --ignore-scripts
+npm --prefix tests/community test
+```
+
+The draft ships with no verified store or package seeds and has no web endpoint. Keep it out of deployed migrations and the public preview until rollout is approved.
+
 ## Future work
 
 - Add explicit receipt-image privacy controls and straightforward account onboarding.
