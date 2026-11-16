@@ -280,9 +280,13 @@ $function$;
 
 revoke all on function receipt_community.set_consent(uuid, text, integer, text)
   from public, anon, authenticated;
-grant usage on schema receipt_community to authenticated;
+-- The trusted consent server can assume this role inside a transaction.
+-- It can call the owner-checked function without access to the receipt tables.
+create role receipt_community_consent nologin noinherit;
+
+grant usage on schema receipt_community to authenticated, receipt_community_consent;
 grant execute on function receipt_community.set_consent(uuid, text, integer, text)
-  to authenticated;
+  to authenticated, receipt_community_consent;
 
 -- Use one visibility rule for both candidate selection and returned history.
 create view receipt_community.visible_observations as
