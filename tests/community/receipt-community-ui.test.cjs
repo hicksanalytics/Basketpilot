@@ -38,9 +38,9 @@ async function until(predicate, message) {
 }
 
 async function writeReceipt({ id = randomUUID(), owner_id = owner, retailer = 'sams',
-  store_id = store, purchase_date = '2024-10-01', subtotal = 20, created_at = null } = {}) {
-  await db.query('insert into receipts (id, owner_id, retailer, store_id, purchase_date, subtotal, created_at) values ($1,$2,$3,$4,$5,$6,coalesce($7,clock_timestamp()))',
-    [id, owner_id, retailer, store_id, purchase_date, subtotal, created_at]);
+  store_id = store, purchase_date = '2024-10-01', subtotal = 20, created_at = null, receipt_fingerprint = null } = {}) {
+  await db.query('insert into receipts (id, owner_id, retailer, store_id, purchase_date, subtotal, created_at, receipt_fingerprint) values ($1,$2,$3,$4,$5,$6,coalesce($7,clock_timestamp()),$8)',
+    [id, owner_id, retailer, store_id, purchase_date, subtotal, created_at, receipt_fingerprint]);
   return id;
 }
 
@@ -77,7 +77,7 @@ function build(t, { sharing = true, signedIn = true, fixtureOwner = owner } = {}
 
   const fixtureUser = { id: fixtureOwner, email: 'fixture@example.test' };
   let user = signedIn ? fixtureUser : null;
-  const controls = { operations: [], lastSaved: null, loseShareResponse: false, beforeLines: null, beforeHistory: null };
+  const controls = { operations: [], lastSaved: null, loseShareResponse: false, beforeLines: null, beforeHistory: null, beforeDuplicate: null };
   const client = {
     auth: {
       async getUser() { return { data: { user } }; },
@@ -92,9 +92,14 @@ function build(t, { sharing = true, signedIn = true, fixtureOwner = owner } = {}
             assert.equal(payload.owner_id, user?.id);
             assert.equal(payload.contribution_opt_in, false);
             return { select: () => ({ single: async () => {
-              const id = await writeReceipt(payload);
-              controls.lastSaved = id;
-              return { data: { id } };
+              try {
+                const id = await writeReceipt(payload);
+                controls.lastSaved = id;
+                return { data: { id } };
+              } catch (error) {
+                if (error.code !== '23505') throw error;
+                return { error };
+              }
             } }) };
           }
           assert.equal(table, 'receipt_items');
@@ -104,15 +109,19 @@ function build(t, { sharing = true, signedIn = true, fixtureOwner = owner } = {}
             return {};
           })();
         },
-        select() {
+        select(columns) {
           assert.equal(table, 'receipts');
           const userId = user?.id;
           const order = [];
-          let filterOwner, cursorTime, cursorId;
+          let filterOwner, fingerprint, cursorTime, cursorId;
           const query = {
             eq(column, value) {
-              assert.equal(column, 'owner_id');
-              filterOwner = value;
+              if (column === 'owner_id') filterOwner = value;
+              else {
+                assert.equal(column, 'receipt_fingerprint');
+                assert.match(value, /^[a-f0-9]{64}$/);
+                fingerprint = value;
+              }
               return query;
             },
             order(column, options) {
@@ -125,6 +134,20 @@ function build(t, { sharing = true, signedIn = true, fixtureOwner = owner } = {}
               assert.ok(match, filter);
               [, cursorTime, cursorId] = match;
               return query;
+            },
+            async maybeSingle() {
+              assert.equal(columns, 'id,receipt_items(id),receipt_discounts(id)');
+              assert.equal(filterOwner, userId);
+              assert.ok(fingerprint);
+              const { rows } = await asUser(userId, tx => tx.query(
+                `select r.id,
+                   coalesce((select json_agg(json_build_object('id', i.id)) from receipt_items i where i.receipt_id = r.id), '[]') as receipt_items,
+                   coalesce((select json_agg(json_build_object('id', d.id)) from receipt_discounts d where d.receipt_id = r.id), '[]') as receipt_discounts
+                 from receipts r where r.owner_id = $1 and r.receipt_fingerprint = $2`,
+                [filterOwner, fingerprint]
+              ));
+              await controls.beforeDuplicate?.();
+              return { data: rows[0] ?? null };
             },
             async limit(limit) {
               assert.deepEqual(order, ['created_at', 'id']);
@@ -546,4 +569,85 @@ test('history shows a held price privately and keeps withdrawal available', asyn
   assert.ok(panel.querySelector('button').classList.contains('hidden'));
   assert.equal(await countObservations(id), 0);
   assert.deepEqual((await db.query('select id from receipts where id = $1', [id])).rows, [{ id }]);
+});
+
+test('retrying a saved receipt reopens its consent state without creating or sharing another receipt', async t => {
+  const fixtureOwner = randomUUID();
+  const original = build(t, { fixtureOwner });
+  await until(() => !original.byId('cloud-save').disabled, 'Original page should be signed in');
+  original.review('10/30/2024');
+  original.byId('quick-save').click();
+  await until(() => !original.byId('review-community').hidden, 'Original review should save');
+  const id = original.controls.lastSaved;
+  assert.equal(await countObservations(id), 0);
+
+  const retry = build(t, { fixtureOwner });
+  await until(() => !retry.byId('cloud-save').disabled, 'Retry page should be signed in');
+  retry.review('10/30/2024');
+  retry.byId('quick-save').click();
+  await until(() => !retry.byId('review-community').hidden, 'Retry should reopen the original review');
+  assert.match(retry.byId('cloud-status').textContent, /already in your private history/);
+  const panel = panelIn(retry.byId('review-community'));
+  const share = await action(panel, 'Share 1 item price');
+  assert.deepEqual(retry.controls.operations, [{ id, action: 'status', revision: null }]);
+  assert.equal(retry.controls.lastSaved, null);
+  assert.equal(await countObservations(id), 0);
+  share.click();
+  await action(panel, 'Withdraw shared prices');
+  assert.equal(await countObservations(id), 1);
+
+  // A subsequent retry should reopen the same consent and offer withdrawal.
+  await until(() => !retry.byId('cloud-save').disabled, 'The previous retry should finish');
+  retry.byId('quick-save').click();
+  await until(() => panelIn(retry.byId('review-community')) !== panel && !retry.byId('review-community').hidden,
+    'Second retry should open a new panel for the original receipt');
+  (await action(panelIn(retry.byId('review-community')), 'Withdraw shared prices')).click();
+  await action(panelIn(retry.byId('review-community')), 'Check eligible prices');
+  assert.equal(await countObservations(id), 0);
+  assert.deepEqual((await db.query('select id from receipts where owner_id = $1', [fixtureOwner])).rows, [{ id }]);
+  assert.equal((await db.query('select id from receipt_items where receipt_id = $1', [id])).rows.length, 1);
+});
+
+test('an incomplete earlier save or a changed review cannot open consent on retry', async t => {
+  const fixtureOwner = randomUUID();
+  const original = build(t, { fixtureOwner });
+  const linesPending = Promise.withResolvers();
+  let writingLines = false;
+  original.controls.beforeLines = () => {
+    writingLines = true;
+    return linesPending.promise;
+  };
+  await until(() => !original.byId('cloud-save').disabled, 'Original page should be signed in');
+  original.review('10/31/2024');
+  original.byId('quick-save').click();
+  await until(() => writingLines, 'Original save should have reached its line write');
+
+  const retry = build(t, { fixtureOwner });
+  await until(() => !retry.byId('cloud-save').disabled, 'Retry page should be signed in');
+  retry.review('10/31/2024');
+  retry.byId('quick-save').click();
+  await until(() => retry.byId('cloud-status').textContent.includes('saved line count differs'),
+    'A partial receipt should be explained');
+  assert.equal(retry.byId('review-community').hidden, true);
+  assert.deepEqual(retry.controls.operations, []);
+
+  linesPending.resolve();
+  await until(() => !original.byId('review-community').hidden, 'Original save should finish');
+  await until(() => !retry.byId('cloud-save').disabled, 'The partial retry should finish');
+  const readPending = Promise.withResolvers();
+  let reading = false;
+  retry.controls.beforeDuplicate = () => {
+    reading = true;
+    return readPending.promise;
+  };
+  retry.byId('quick-save').click();
+  await until(() => reading, 'Retry should reach the lookup');
+  const amount = retry.byId('items').querySelector('[aria-label="Paid amount"]');
+  amount.value = '32.00';
+  amount.dispatchEvent(new retry.window.Event('input', { bubbles: true }));
+  readPending.resolve();
+  await until(() => !retry.byId('cloud-save').disabled, 'Retry should finish');
+  assert.equal(retry.byId('review-community').hidden, true);
+  assert.deepEqual(retry.controls.operations, []);
+  assert.equal(await countObservations(original.controls.lastSaved), 0);
 });

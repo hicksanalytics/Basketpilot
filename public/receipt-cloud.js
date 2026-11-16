@@ -34,6 +34,37 @@ function validatedSnapshot(){const info=snapshot();if(!info?.valid||!info.parsed
  return {...info,parsed:{...info.parsed},items,discounts,reconciled};}
 async function fingerprint(data){const payload=[data.retailer,data.storeId,data.purchaseDate,data.parsed.total??null,data.items.map(x=>[x.sku,x.description,x.quantity,x.lineTotal]),data.discounts.map(x=>[x.description,x.lineTotal])];const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(payload)));return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');}
 function imageMeta(file){if(!file)return null;const mime=(file.type||'').toLowerCase();const suffix={'image/jpeg':'jpg','image/png':'png','image/webp':'webp'}[mime];if(!suffix)throw Error('For private photo storage use JPG, PNG or WebP, or uncheck Keep original photo.');if(file.size>8*1024*1024)throw Error('Original photo exceeds 8 MB; choose a smaller photo or uncheck image storage.');return {mime,suffix};}
+
+function showSavedReview(receiptId, owner, reviewRevision) {
+  if (state.user?.id !== owner) return;
+  $('receipt-view-insights').classList.remove('hidden');
+  if (!receiptCommunity || snapshot()?.reviewRevision !== reviewRevision) return;
+  const host = $('review-community');
+  host.hidden = false;
+  receiptCommunity.mount(host, receiptId, { expanded: true });
+}
+
+async function reopenExistingReceipt(owner, receiptFingerprint, review) {
+  const { data: receipt, error } = await sb.from('receipts')
+    .select('id,receipt_items(id),receipt_discounts(id)')
+    .eq('owner_id', owner)
+    .eq('receipt_fingerprint', receiptFingerprint)
+    .maybeSingle();
+  if (state.user?.id !== owner) return;
+  if (error || !receipt) {
+    status('Could not confirm the original save. Check your private history or try again.');
+    return;
+  }
+  if (receipt.receipt_items?.length !== review.items.length || receipt.receipt_discounts?.length !== review.discounts.length) {
+    status('This receipt is in your history, but its saved line count differs. Check its details before trying again.');
+    await loadHistory();
+    return;
+  }
+  status('This receipt is already in your private history.');
+  showSavedReview(receipt.id, owner, review.reviewRevision);
+  await loadHistory();
+}
+
 async function save(){if(!state.user){status('Sign in before saving.');return;}let data;try{data=validatedSnapshot();if($('cloud-photo').checked&&data.file)imageMeta(data.file);}catch(err){status(readableError(err));return;}
  const owner=state.user.id;
  const keepPhoto=$('cloud-photo').checked;
@@ -41,7 +72,7 @@ async function save(){if(!state.user){status('Sign in before saving.');return;}l
  const receipt_fingerprint=await fingerprint(data);
  const header={owner_id:owner,retailer:data.retailer,store_id:sanitizeText(data.storeId,12)||null,purchase_date:data.purchaseDate,subtotal:number(data.parsed.subtotal),tax_total:number(data.parsed.tax),total:number(data.parsed.total),receipt_fingerprint,source_type:data.file?'receipt_image':'pasted_text',status:'pending_match',contribution_opt_in:false};
  const created=await sb.from('receipts').insert(header).select('id').single();
- if(created.error){if(created.error.code==='23505'){status('This receipt was already saved.');await loadHistory();return;}throw created.error;}
+ if(created.error){if(created.error.code==='23505'){await reopenExistingReceipt(owner,receipt_fingerprint,data);return;}throw created.error;}
  receiptId=created.data.id;
  const itemRows=data.items.map((x,i)=>{
   const hint=window.BasketPilotInsightsCore?.inferMetadata?.({
@@ -63,12 +94,7 @@ async function save(){if(!state.user){status('Sign in before saving.');return;}l
    else{const update=await sb.from('receipts').update({photo_path:path}).eq('id',receiptId);if(update.error){await sb.storage.from('basketpilot-receipt-images').remove([path]);imageNote=' Image link failed; the image was removed.';}}
  }
  status('Saved '+itemRows.length+' items and '+data.discounts.length+' discounts privately.'+(data.reconciled?' Subtotal reconciled.':' Subtotal needs review.')+' View your updated product trends in My Prices. No community sharing.'+imageNote);
- $('receipt-view-insights').classList.remove('hidden');
- if(receiptCommunity&&state.user?.id===owner&&snapshot()?.reviewRevision===data.reviewRevision){
-   const host=$('review-community');
-   host.hidden=false;
-   receiptCommunity.mount(host,receiptId,{expanded:true});
- }
+ showSavedReview(receiptId,owner,data.reviewRevision);
  await loadHistory();
  }catch(err){if(receiptId){const rollback=await sb.from('receipts').delete().eq('id',receiptId);status(rollback.error?'Save failed; a partial receipt may remain. Check history. ':'Save failed; no receipt was kept. '+readableError(err));}else status('Save failed: '+readableError(err));}
  finally{busy(false);}}

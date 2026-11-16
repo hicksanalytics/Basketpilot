@@ -14,7 +14,9 @@ create table public.receipts (
   purchase_date date,
   subtotal numeric,
   created_at timestamptz not null default clock_timestamp(),
-  contribution_opt_in boolean not null default false
+  contribution_opt_in boolean not null default false,
+  receipt_fingerprint text,
+  unique (owner_id, receipt_fingerprint)
 );
 
 create table public.receipt_items (
