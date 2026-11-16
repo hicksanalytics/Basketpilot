@@ -11,6 +11,28 @@ test('receipt prefix parsing stays Costco-specific and preserves the printed dig
  assert.equal(p.parseReceipt('COSTCO\nE 7827960 WATER 4.25').items[0].sku,'7827960');
  assert.equal(p.parseReceipt('COSTCO\nE 7827961A WATER 4.25').items[0].sku,'');
 });
+test('Costco warehouse extraction uses the explicit header and register footer',()=>{
+ const header=['COSTCO WHOLESALE','Brentwood #386','98 Seaboard Ln','Brentwood, TN 37027'].join('\n');
+ const rows='\nE 782796 WATER 4.25 A\nSUBTOTAL 4.25\n';
+ const footer='Whse:386 Trm:7 Trn:32 OP:113';
+ assert.equal(p.parseReceipt(header+rows).storeId,'386');
+ assert.equal(p.parseReceipt(header+rows+footer).storeId,'386');
+ assert.equal(p.parseReceipt('COSTCO WHOLESALE'+rows+footer).storeId,'386');
+ assert.equal(p.parseReceipt(header.replace('#386','#0386')+rows).storeId,'0386');
+ assert.equal(p.parseReceipt(header+rows+'Whse:1785 Trm:7 Trn:32 OP:113').storeId,'');
+ assert.equal(p.parseReceipt('COSTCO WHOLESALE'+rows+footer+'\nWhse:1785').storeId,'');
+});
+test('Costco warehouse extraction leaves address-only and unrelated receipt numbers blank',()=>{
+ const rows='\nE 782796 WATER 4.25 A\nSUBTOTAL 4.25\n';
+ for(const text of [
+   'COSTCO WHOLESALE\n98 Seaboard Ln\nBrentwood, TN 37027'+rows+'OP#: 386',
+   'COSTCO WHOLESALE\nOP #386'+rows,
+   'COSTCO WHOLESALE'+rows+'Whse:3860X',
+   'COSTCO WHOLESALE'+rows+'Whse:386.00',
+   'COSTCO WHOLESALE'+rows+'Whse:000',
+   "SAM'S CLUB"+rows+'Whse:386'
+ ]) assert.equal(p.parseReceipt(text).storeId,'');
+});
 test('Publix BOGO is kept separate, not assigned as an everyday price',()=>{
  const r=p.parseReceipt('PUBLIX\nRAOS MARINARA 8.99\nRAOS MARINARA 8.99\nBOGO SAVINGS -8.99\nSUBTOTAL 8.99\nTOTAL 9.70');
  assert.equal(r.items.length,2);assert.equal(r.discounts.length,1);assert.equal(r.computedNet,8.99);assert.equal(r.subtotalDelta,0);

@@ -6,6 +6,7 @@ Status: Development beta. The public Render site is the app; customer receipts a
 - Scan photographs locally using the existing Tesseract-based OCR.
 - Parse Sam's internal 10-digit item codes as **strings**, preserving leading zeroes.
 - Read a six- or seven-digit Costco item number following a separated `E` in a Costco receipt.
+- Prefill the Costco warehouse number from an explicit location header or `Whse:` register footer. Keep the field editable. A conflict leaves it blank, and selecting a different retailer clears the previous number.
 - Recognize Sam's `INST SV` negative tax-flagged discount lines and multiple tax lines.
 - Require the user to review receipt lines, date and retailer before private saving.
 - Keep BOGO/instant-savings separate; do not assume a discounted receipt price is a public shelf price.
@@ -45,6 +46,8 @@ Review, saved receipt history, and private Find a Product match these exact Cost
 | `1975527` | Kirkland Signature Ultra-Filtered Lactose-Free 2% Milk, 3 × 64 fl oz | [Costco Business Center](https://www.costcobusinessdelivery.com/milk.html) |
 
 The receipt in the [Harrison Ranch Community Development District agenda](https://campussuite-storage.s3.amazonaws.com/prod/1558907/9ce571a0-ea9f-11e9-bdd7-0a20d2c7fac4/2910919/ee6004a2-e26d-11ef-93b2-0a58a9feac02/file/2025-02-10%20-%20Harrison%20Ranch%20CDD%20-%20Final%20Agenda.pdf) shows the water case item number following `E`. [Costco support](https://productsupport.costco.com/en/customer/search) identifies warehouse receipts as a source of item numbers. All test receipt contents are synthetic.
+
+Published warehouse receipts show the location-name-and-number header and the register footer. Costco lists the [Brentwood warehouse #386](https://www.costco.com/w/-/TN/brentwood/386) and the [Brentwood showroom #1785](https://www.costco.com/w/-/tn/brentwood/1785) at the same street address. Use the printed number to distinguish them. [Receipt format example](https://www.utah.gov/pmn/files/1243261.pdf)
 
 ## To validate
 Use a real photographed receipt in the hosted app; browser OCR accuracy cannot be determined from synthetic text tests. Sign in with a project-team email, confirm review, and press `Save reviewed receipt privately`. Check the new record in `My saved receipts`. Optional original image storage is off by default. Delete test receipts in the UI when finished.

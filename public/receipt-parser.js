@@ -17,6 +17,9 @@
   function cleanLine(line) {
     return String(line || '').replace(/[\u00a0\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, 180);
   }
+  function receiptLines(text) {
+    return text.split(/\r?\n/).map(cleanLine).filter(Boolean).slice(0, 400);
+  }
   function parseMoney(input) {
     const s = String(input || '').trim();
     if (!/^-?\$?\d{1,5}\.\d{2}-?$/.test(s)) return null;
@@ -57,7 +60,25 @@
     }
     return out;
   }
-  function extractStoreId(text, retailer) {
+  function extractCostcoWarehouse(lines) {
+    const logo = lines.slice(0, 6).findIndex(line => /^COSTCO(?: WHOLESALE)?$/i.test(line));
+    if (logo === -1) return '';
+
+    const candidates = new Set();
+    const name = lines[logo + 1];
+    const address = lines[logo + 2];
+    const header = name?.match(/^[a-z][a-z0-9 .'-]*\s+#\s*(\d{1,4})$/i);
+    if (header && /^\d{1,6}\s+[a-z0-9]/i.test(address || '')) candidates.add(header[1]);
+    for (const line of lines.slice(logo + 1)) {
+      const footer = line.match(/^Whse\s*:\s*(\d{1,4})(?:\s+(?:Trm|Trn|Op)\s*:\s*\d+)*$/i);
+      if (footer) candidates.add(footer[1]);
+    }
+    if (candidates.size !== 1) return '';
+    const [warehouse] = candidates;
+    return /[1-9]/.test(warehouse) ? warehouse : '';
+  }
+  function extractStoreId(text, retailer, lines) {
+    if (retailer === 'costco') return extractCostcoWarehouse(lines ?? receiptLines(String(text || '').slice(0, 70000)));
     if (retailer !== 'sams') return '';
     // Sam's register header: date, time, register transaction, club number, lane.
     const head = String(text || '').slice(0, 1200);
@@ -96,7 +117,7 @@
   }
   function parseReceipt(text) {
     const raw=String(text||'').slice(0,70000);
-    const lines=raw.split(/\r?\n/).map(cleanLine).filter(Boolean).slice(0,400);
+    const lines=receiptLines(raw);
     const summary=parseSummary(lines);
     const retailer=detectRetailer(raw);
     const parsed=lines.map((line,i)=>parseLine(line,i,retailer)).filter(Boolean);
@@ -114,7 +135,7 @@
     warnings.push('Product identities are not catalog-verified; do not use these amounts as public store prices.');
     return {
       retailer, retailerName:stores[retailer]||'Unknown retailer',
-      purchasedOn:extractDate(raw), storeId:extractStoreId(raw,retailer), ...summary, items, discounts, recognizedLines:parsed.length,
+      purchasedOn:extractDate(raw), storeId:extractStoreId(raw,retailer,lines), ...summary, items, discounts, recognizedLines:parsed.length,
       sourceLineCount:lines.length, parsedGross:Number(gross.toFixed(2)), parsedDiscounts:Number(savings.toFixed(2)),
       computedNet:net, subtotalDelta:diff, warnings, saved:false, catalogMatched:false,
     };

@@ -164,3 +164,23 @@ test('Costco review verifies the 40-bottle case and distinct egg packs from the 
   app.save();
   assert.equal(app.saved, 1);
 });
+
+test('Costco review pre-fills the warehouse and requires a fresh location if the retailer changes', () => {
+  const app = openReview([
+    'COSTCO WHOLESALE', 'Brentwood #386', '98 Seaboard Ln', '11/14/2026',
+    'E 782796 WATER 4.25 A', 'SUBTOTAL 4.25', 'Whse:386 Trm:7 Trn:32 OP:113'
+  ].join('\n'));
+  assert.equal(app.payload.storeId, '386');
+  assert.equal(app.metric('Exact SKU matches'), '1 of 1');
+  assert.equal(app.payload.parsed.items[0].sku, '782796');
+
+  app.node('store').value = 'sams';
+  app.node('store').dispatch('change');
+  assert.equal(app.payload.storeId, '');
+  assert.equal(app.metric('Exact SKU matches'), '0 of 1');
+  assert.equal(app.payload.valid, true);
+  app.node('store-id').value = '6249';
+  assert.equal(app.payload.storeId, '6249');
+  app.save();
+  assert.equal(app.saved, 1);
+});
