@@ -64,7 +64,12 @@ async function save(){if(!state.user){status('Sign in before saving.');return;}l
  finally{busy(false);}}
 function receiptCard(r){const box=document.createElement('div');box.className='cloud-history-card';appendText(box,'strong',(storeNames[r.retailer]||r.retailer)+' · '+(r.purchase_date||'Date unknown'));appendText(box,'div',(r.store_id?'Store '+r.store_id+' · ':'')+money(r.total)+' · '+(r.receipt_items||[]).length+' items','muted');
  const details=document.createElement('details'),summary=document.createElement('summary');summary.textContent='Purchased items and discounts';details.appendChild(summary);const ul=document.createElement('ul');
- for(const item of r.receipt_items||[])appendText(ul,'li',(item.retailer_item_code?'#'+item.retailer_item_code+' · ':'')+(item.match_status==='verified'&&item.matched_title?item.matched_title:item.receipt_description)+' · '+money(item.gross_line_total)+(item.match_status==='verified'?' (catalog item #'+item.matched_product_id+' verified)':' (needs catalog match)'));
+ for(const item of r.receipt_items||[]){
+  const match=window.BasketPilotVerifiedCatalog?.resolveSavedItem(r.retailer,item);
+  const matchId=item.match_status==='verified'?item.matched_product_id:match?.id;
+  const note=matchId?' (catalog item #'+matchId+' verified)':' (needs catalog match)';
+  appendText(ul,'li',(item.retailer_item_code?'#'+item.retailer_item_code+' · ':'')+(match?.title||item.receipt_description)+' · '+money(item.gross_line_total)+note);
+ }
  for(const d of r.receipt_discounts||[])appendText(ul,'li','Discount: '+d.label+' −'+money(d.amount));
  details.appendChild(ul);box.appendChild(details);const controls=document.createElement('div');controls.className='buttons';
  if(r.photo_path){const photo=document.createElement('button');photo.type='button';photo.className='button secondary';photo.textContent='View private image';photo.addEventListener('click',()=>viewPhoto(r));controls.appendChild(photo);}

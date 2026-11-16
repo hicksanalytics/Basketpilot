@@ -4,6 +4,13 @@ test('Costco item IDs and totals',()=>{
  const r=p.parseReceipt('COSTCO\n1798799 KIRKLAND PAPER TOWELS 19.99\n1798790 MILK 4.99\nSUBTOTAL 24.98\nTAX 0.00\nTOTAL 24.98\n11/14/2026');
  assert.equal(r.retailer,'costco');assert.equal(r.items.length,2);assert.equal(r.items[0].sku,'1798799');assert.equal(r.subtotalDelta,0);assert.equal(r.purchasedOn,'2026-11-14');
 });
+test('receipt prefix parsing stays Costco-specific and preserves the printed digits',()=>{
+ const row='E 0782796 WATER 4.25 A';
+ assert.equal(p.parseReceipt('COSTCO\n'+row).items[0].sku,'0782796');
+ assert.equal(p.parseReceipt("SAM'S CLUB\n"+row).items[0].sku,'');
+ assert.equal(p.parseReceipt('COSTCO\nE 7827960 WATER 4.25').items[0].sku,'7827960');
+ assert.equal(p.parseReceipt('COSTCO\nE 7827961A WATER 4.25').items[0].sku,'');
+});
 test('Publix BOGO is kept separate, not assigned as an everyday price',()=>{
  const r=p.parseReceipt('PUBLIX\nRAOS MARINARA 8.99\nRAOS MARINARA 8.99\nBOGO SAVINGS -8.99\nSUBTOTAL 8.99\nTOTAL 9.70');
  assert.equal(r.items.length,2);assert.equal(r.discounts.length,1);assert.equal(r.computedNet,8.99);assert.equal(r.subtotalDelta,0);

@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { normalizeBarcode, expandUpce, buildProducts, searchProducts } = require('../public/product-lookup-core.js');
+const catalog = require('../public/verified-receipt-catalog.js');
 
 const upc = '036000291452';
 const gtin = '00036000291452';
@@ -34,6 +35,40 @@ test('finds names across retailers without merging different packages or retaile
   assert.equal(searchProducts(products, 'ball park 24').length, 1);
   assert.equal(searchProducts(products, 'beef franks').length, 3);
   assert.equal(searchProducts(products, upc).length, 0);
+});
+
+test('finds exact Costco package names in old private receipts with an item number', () => {
+  const products = buildProducts([
+    receipt('costco', '386', '2026-11-13',
+      item('water', { retailer_item_code: '782796', receipt_description: 'KSWTR40PK' }),
+      item('pallet', { retailer_item_code: '2075900', receipt_description: 'WATER PALLET' }),
+      item('eggs', { retailer_item_code: '1068080', receipt_description: 'ORG EGGS' }),
+      item('other-eggs', { retailer_item_code: '1068083', receipt_description: 'ORG EGGS' })),
+    receipt('sams', '6249', '2026-11-13',
+      item('different-retailer', { retailer_item_code: '782796', receipt_description: 'DIFFERENT ITEM' }))
+  ]);
+  const [water] = searchProducts(products, 'purified drinking water');
+  assert.equal(water.title, 'Kirkland Signature Purified Drinking Water, 40 × 16.9 fl oz');
+  assert.deepEqual(water.prices.map(({ retailer, store }) => [retailer, store]), [['costco', '386']]);
+  assert.equal(searchProducts(products, 'water pallet').length, 1);
+  const eggs = searchProducts(products, 'kirkland organic eggs');
+  assert.equal(eggs.length, 2);
+  assert.equal(searchProducts(products, 'pasture raised eggs').length, 1);
+  assert.equal(searchProducts(products, 'free range eggs').length, 1);
+});
+
+test('Costco reference preserves exact numbers and server-verified saved titles', () => {
+  for (const code of ['782796', '427381', '1068080', '1068083', '897971', '1975527']) {
+    assert.equal(catalog.lookup('costco', code).id, code);
+  }
+  for (const code of ['0782796', '782-796', '19232551', '1147352', '2075900', 'constructor']) {
+    assert.equal(catalog.lookup('costco', code), null);
+  }
+  assert.equal(catalog.lookup('sams', '782796'), null);
+  assert.equal(catalog.resolveSavedItem('costco', item('saved', {
+    retailer_item_code: '782796', match_status: 'verified',
+    matched_product_id: 'existing-id', matched_title: 'Existing verified title'
+  })).title, 'Existing verified title');
 });
 
 test('linked packages compare latest per-store prices and flag unallocated coupons', () => {

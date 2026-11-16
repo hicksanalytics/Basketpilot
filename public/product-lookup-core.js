@@ -1,8 +1,7 @@
 (function (root, factory) {
-  const api = factory();
-  if (typeof module === 'object' && module.exports) module.exports = api;
-  if (root) root.BasketPilotProductLookup = api;
-})(typeof window !== 'undefined' ? window : null, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./verified-receipt-catalog.js'));
+  if (root) root.BasketPilotProductLookup = factory(root.BasketPilotVerifiedCatalog);
+})(typeof window !== 'undefined' ? window : null, function (catalog) {
   'use strict';
 
   function normalizeBarcode(value) {
@@ -41,9 +40,9 @@
       for (const item of receipt.receipt_items ?? []) {
         const sku = receiptSku(receipt.retailer, item);
         const barcode = normalizeBarcode(item.package_gtin);
-        const title = item.match_status === 'verified' && item.matched_title
-          ? item.matched_title : item.receipt_description;
-        lines.push({ receipt, item, sku, barcode, title });
+        const catalogTitle = catalog?.resolveSavedItem(receipt.retailer, item)?.title;
+        const title = catalogTitle || item.receipt_description;
+        lines.push({ receipt, item, sku, barcode, title, catalogTitle });
         if (sku && barcode) {
           if (!skuBarcodes.has(sku)) skuBarcodes.set(sku, new Set());
           skuBarcodes.get(sku).add(barcode);
@@ -83,9 +82,10 @@
         id: line.item.id, title: line.title, retailer: line.receipt.retailer, date: line.receipt.purchase_date,
         sku: line.item.retailer_item_code
       });
+      const savedTitle = sorted.find(line => line.item.match_status === 'verified' && line.catalogTitle)?.catalogTitle;
       return {
         barcode: product.barcode,
-        title: sorted.find(line => line.item.match_status === 'verified' && line.item.matched_title)?.title || sorted[0].title,
+        title: savedTitle || sorted.find(line => line.catalogTitle)?.catalogTitle || sorted[0].title,
         prices: [...latest.values()].sort((a, b) => a.price - b.price),
         terms: new Set(sorted.flatMap(({ title, item, receipt }) =>
           words([title, item.receipt_description, categoryLabel(item, receipt.retailer)].join(' ')))),

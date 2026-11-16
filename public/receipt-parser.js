@@ -64,7 +64,7 @@
     const m = head.match(/\b\d{1,2}\/\d{1,2}\/\d{2,4}\s+\d{1,2}:\d{2}\s+\d{1,8}\s+(\d{4})\s+\d{1,3}\b/);
     return m ? m[1] : '';
   }
-  function parseLine(line, index) {
+  function parseLine(line, index, retailer) {
     const m=line.match(moneyEnding);
     if(!m) return null;
     const amount=parseMoney(m[2]);
@@ -73,7 +73,8 @@
     if(!label||label.length<3||controlRE.test(label))return null;
     const isDiscount=discountRE.test(label)||amount<0;
     let sku='';
-    const skuMatch=label.match(/^(\d{4,14})\s+(.+)$/);
+    const skuMatch=label.match(/^(\d{4,14})\s+(.+)$/)
+      || (retailer === 'costco' ? label.match(/^E\s+(\d{6,7})\s+(.+)$/i) : null);
     if(skuMatch){sku=skuMatch[1];label=cleanLine(skuMatch[2]);}
     let qty=1;
     const qtyMatch=label.match(/^(\d+(?:\.\d+)?)\s*[xX@]\s+(.+)$/);
@@ -97,7 +98,8 @@
     const raw=String(text||'').slice(0,70000);
     const lines=raw.split(/\r?\n/).map(cleanLine).filter(Boolean).slice(0,400);
     const summary=parseSummary(lines);
-    const parsed=lines.map((line,i)=>parseLine(line,i)).filter(Boolean);
+    const retailer=detectRetailer(raw);
+    const parsed=lines.map((line,i)=>parseLine(line,i,retailer)).filter(Boolean);
     const items=parsed.filter(x=>x.kind==='item');
     const discounts=parsed.filter(x=>x.kind==='discount');
     const gross=items.reduce((s,x)=>s+x.lineTotal,0);
@@ -111,8 +113,8 @@
     if(discounts.length) warnings.push('Discounts were detected but NOT allocated to individual products.');
     warnings.push('Product identities are not catalog-verified; do not use these amounts as public store prices.');
     return {
-      retailer:detectRetailer(raw), retailerName:stores[detectRetailer(raw)]||'Unknown retailer',
-      purchasedOn:extractDate(raw), storeId:extractStoreId(raw,detectRetailer(raw)), ...summary, items, discounts, recognizedLines:parsed.length,
+      retailer, retailerName:stores[retailer]||'Unknown retailer',
+      purchasedOn:extractDate(raw), storeId:extractStoreId(raw,retailer), ...summary, items, discounts, recognizedLines:parsed.length,
       sourceLineCount:lines.length, parsedGross:Number(gross.toFixed(2)), parsedDiscounts:Number(savings.toFixed(2)),
       computedNet:net, subtotalDelta:diff, warnings, saved:false, catalogMatched:false,
     };
