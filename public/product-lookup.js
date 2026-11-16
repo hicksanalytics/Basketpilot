@@ -60,7 +60,9 @@ async function setAccount(user) {
   historyReady = false;
   resetLink();
   $('sign-in').hidden = Boolean(account);
-  $('account-status').textContent = account ? 'Loading your private receipt history…' : 'Sign in to search your saved purchases.';
+  $('account-status').textContent = account
+    ? 'Loading your private receipt history…'
+    : communityLookup ? 'You can search shared receipt prices now.' : 'Sign in to search your saved purchases.';
   renderResults();
   if (account) await loadProducts();
 }

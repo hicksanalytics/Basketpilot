@@ -7,10 +7,10 @@ const { createCommunityLookup } = require('../../supabase/drafts/community-produ
 const read = file => fs.readFileSync(path.join(__dirname, '../..', file), 'utf8');
 
 async function readCommunityPrices(db, { name, packageGtin }) {
-  const { rows } = await db.query(
-    'select * from receipt_community.search_package_prices($1,$2)',
-    [name, packageGtin]
-  );
+  const { rows } = await db.transaction(async tx => {
+    await tx.exec('set local role receipt_community_reader');
+    return tx.query('select * from receipt_community.search_package_prices($1,$2)', [name, packageGtin]);
+  });
   return rows.map(row => ({ ...row, purchase_date: row.purchase_date.toISOString().slice(0, 10) }));
 }
 

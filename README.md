@@ -52,6 +52,8 @@ npm --prefix tests/community test
 
 The tests run the receipt and product pages in a simulated browser DOM with a synthetic database transport. Receipt review offers sharing after private save, and previously saved receipts offer the same controls in history. The shopper sees each eligible package, location, purchase date, and price per package before opting in. The share request carries the preview token and consent revision. A change to the eligible prices refreshes the preview and requires another explicit opt-in. Find a Product searches the curated package name or independently verified barcode and puts dated shared prices in their own section. The published configuration keeps both controllers disabled. The draft has no hosted endpoint or live catalog seed.
 
+The fixture runs guest lookups under the `receipt_community_reader` database role. It can read the shared price projection and run the bounded search. Its view contains the retailer, verified package and location, purchase date, and price. A future backend can use a dedicated server connection with that role after approval.
+
 ## Future work
 
 - Add explicit receipt-image privacy controls and straightforward account onboarding.

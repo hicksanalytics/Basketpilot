@@ -352,3 +352,51 @@ test('curated barcode entries require a valid normalized GTIN and an evidence li
   const { rows } = await db.query("select package_gtin from receipt_community.verified_packages where receipt_item_code = '0000000948'");
   assert.deepEqual(rows, [{ package_gtin: '00030000561959' }]);
 });
+
+test('the community reader can run search and has access only to the shared price projection', async () => {
+  const reader = statement => db.transaction(async tx => {
+    await tx.exec('set local role receipt_community_reader');
+    return tx.query(statement);
+  });
+  const code = '0000000951';
+  await db.query('insert into receipt_community.verified_packages values ($1,$2,$3,$4)',
+    ['fixture', code, 'Reader fixture case', 'https://example.com/reader-case']);
+  await addReceipt(51);
+  await addItem(51, 510, { code, gross: 20 });
+  await addReceipt(52, { date: '2024-11-15', subtotal: 30 });
+  await addItem(52, 520, { code, gross: 30 });
+  assert.equal((await consent(51, 'share', 0)).outcome, 'shared');
+  // Receipt 52 stays private even when its retailer item is known.
+  const { rows } = await reader("select * from receipt_community.search_package_prices('Reader fixture case')");
+  assert.equal(rows.length, 1);
+  assert.deepEqual(Object.keys(rows[0]).sort(), [
+    'location_name','package_gtin','package_name','package_price_cents','purchase_date',
+    'receipt_item_code','retailer','store_id'
+  ]);
+  assert.equal(rows[0].package_price_cents, 1000);
+  assert.deepEqual((await reader("select * from receipt_community.lookup_price_rows where receipt_item_code = '0000000951' and package_price_cents = 1500")).rows, []);
+
+  for (const statement of [
+    'select * from public.receipts',
+    'select * from public.receipt_items',
+    'select * from public.receipt_discounts',
+    'select * from receipt_community.observations',
+    'select * from receipt_community.checked_lines',
+    'select * from receipt_community.observation_holds',
+    'select * from receipt_community.verified_stores',
+    'select * from receipt_community.verified_packages',
+    "select * from receipt_community.set_consent(null,'status')"
+  ]) await assert.rejects(reader(statement), { code: '42501' });
+
+  const mutation = await reader(`select has_table_privilege(
+    current_user, 'receipt_community.lookup_price_rows', 'DELETE,INSERT,UPDATE'
+  ) as allowed`);
+  assert.equal(mutation.rows[0].allowed, false);
+  assert.equal((await db.query("select rolcanlogin from pg_roles where rolname = 'receipt_community_reader'")).rows[0].rolcanlogin, false);
+  for (const role of ['anon', 'authenticated']) {
+    await assert.rejects(db.transaction(async tx => {
+      await tx.exec('set local role ' + role);
+      await tx.query("select * from receipt_community.search_package_prices('Synthetic package')");
+    }), { code: '42501' });
+  }
+});

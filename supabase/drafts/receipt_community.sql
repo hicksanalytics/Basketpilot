@@ -294,6 +294,22 @@ where not exists (
 
 revoke all on receipt_community.visible_observations from public, anon, authenticated;
 
+-- The lookup connection can read this projection. A hosted service can
+-- separately assign this role after the contribution path is approved.
+create role receipt_community_reader nologin noinherit;
+
+create view receipt_community.lookup_price_rows with (security_barrier = true) as
+select o.retailer, o.receipt_item_code, p.package_name, p.package_gtin, o.store_id,
+  s.location_name, o.purchase_date, o.package_price_cents
+from receipt_community.visible_observations o
+join receipt_community.verified_packages p using (retailer, receipt_item_code)
+join receipt_community.verified_stores s
+  on s.retailer = o.retailer and s.store_id = o.store_id;
+
+revoke all on receipt_community.lookup_price_rows from public, anon, authenticated;
+grant usage on schema receipt_community to receipt_community_reader;
+grant select on receipt_community.lookup_price_rows to receipt_community_reader;
+
 -- A future lookup endpoint can expose this projection after activation.
 -- Identical visible prices collapse without revealing contribution counts.
 create function receipt_community.package_price_history(
@@ -308,13 +324,9 @@ language sql
 stable
 set search_path = ''
 as $function$
-  select o.retailer, o.receipt_item_code, p.package_name, o.store_id,
-    s.location_name, o.purchase_date, o.package_price_cents
-  from receipt_community.visible_observations o
-  join receipt_community.verified_packages p
-    using (retailer, receipt_item_code)
-  join receipt_community.verified_stores s
-    on s.retailer = o.retailer and s.store_id = o.store_id
+  select o.retailer, o.receipt_item_code, o.package_name, o.store_id,
+    o.location_name, o.purchase_date, o.package_price_cents
+  from receipt_community.lookup_price_rows o
   where o.retailer = p_retailer and o.receipt_item_code = p_receipt_item_code
   order by o.purchase_date desc, o.store_id, o.package_price_cents
   limit 50
@@ -337,26 +349,22 @@ stable
 set search_path = ''
 as $function$
   with matched as (
-    select p.retailer, p.receipt_item_code, p.package_name, p.package_gtin
-    from receipt_community.verified_packages p
+    select distinct p.retailer, p.receipt_item_code, p.package_name, p.package_gtin
+    from receipt_community.lookup_price_rows p
     where (
       (p_name is null and p_package_gtin ~ '^[0-9]{14}$' and p.package_gtin = p_package_gtin)
       or (p_package_gtin is null and char_length(btrim(p_name)) between 2 and 120
         and strpos(lower(p.package_name), lower(btrim(p_name))) > 0)
     )
-    and exists (
-      select 1 from receipt_community.visible_observations o
-      where o.retailer = p.retailer and o.receipt_item_code = p.receipt_item_code
-    )
     order by p.package_name, p.retailer, p.receipt_item_code
     limit 12
   )
   select m.retailer, m.receipt_item_code, m.package_name, m.package_gtin, h.store_id,
-    s.location_name, h.purchase_date, h.package_price_cents
+    h.location_name, h.purchase_date, h.package_price_cents
   from matched m
   cross join lateral (
-    select o.store_id, o.purchase_date, o.package_price_cents
-    from receipt_community.visible_observations o
+    select o.store_id, o.location_name, o.purchase_date, o.package_price_cents
+    from receipt_community.lookup_price_rows o
     where o.retailer = m.retailer and o.receipt_item_code = m.receipt_item_code
     -- Keep one recent observation per store before adding earlier receipts.
     order by (
@@ -364,12 +372,12 @@ as $function$
     ) desc, o.purchase_date desc, o.store_id, o.package_price_cents
     limit 10
   ) h
-  join receipt_community.verified_stores s on s.retailer = m.retailer and s.store_id = h.store_id
   order by m.package_name, m.retailer, m.receipt_item_code, h.purchase_date desc,
     h.store_id, h.package_price_cents
 $function$;
 
 revoke all on function receipt_community.search_package_prices(text, text)
   from public, anon, authenticated;
+grant execute on function receipt_community.search_package_prices(text, text) to receipt_community_reader;
 
 commit;

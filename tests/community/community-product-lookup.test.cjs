@@ -84,6 +84,7 @@ function build(t, { signedIn = false, enabled = true, request = packagePrices } 
 test('a signed-out name search displays dated prices for distinct packages and omits unshared receipts', async t => {
   const { byId, search } = build(t);
   await until(() => !byId('sign-in').hidden, 'Guest view should be ready');
+  assert.equal(byId('account-status').textContent, 'You can search shared receipt prices now.');
   search(' Fixture Oats ');
   const community = byId('community-results');
   const cards = () => [...community.querySelectorAll('article')];
