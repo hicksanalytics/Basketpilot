@@ -1,3 +1,5 @@
+import { ReceiptConsentSignInRequired } from './community-price-transport.mjs';
+
 // Consumes the isolated set_consent contract. The caller supplies the transport.
 export function createReceiptCommunity(request) {
   const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
@@ -16,9 +18,10 @@ export function createReceiptCommunity(request) {
     package_price: 'a positive whole-cent price per package.'
   };
 
-  function mount(parent, receiptId, { expanded = false } = {}) {
+  function mount(parent, receiptId, { expanded = false, onSignInRequired } = {}) {
     const doc = parent.ownerDocument;
     const panel = doc.createElement('details');
+    panel.dataset.receiptCommunity = '';
     const summary = doc.createElement('summary');
     summary.textContent = 'Community prices';
 
@@ -45,6 +48,7 @@ export function createReceiptCommunity(request) {
 
     let state = null;
     let busy = false;
+    let needsSignIn = false;
     const label = count => count === 1 ? '1 item price' : count + ' item prices';
 
     function renderPrices(rows, shared) {
@@ -125,7 +129,7 @@ export function createReceiptCommunity(request) {
     }
 
     async function run(action) {
-      if (busy || !panel.isConnected) return;
+      if (busy || needsSignIn || !panel.isConnected) return;
       busy = true;
       button.disabled = true;
       status.textContent = action === 'status' ? 'Checking eligible prices…' : 'Updating sharing…';
@@ -135,14 +139,17 @@ export function createReceiptCommunity(request) {
           action === 'share' ? state.preview_token : null
         );
         if (panel.isConnected) render(data, action);
-      } catch {
+      } catch (error) {
         if (!panel.isConnected) return;
         state = null;
         renderPrices([], false);
         renderExclusions({});
-        button.textContent = 'Check sharing status';
+        needsSignIn = Boolean(onSignInRequired && error instanceof ReceiptConsentSignInRequired);
+        button.textContent = needsSignIn ? 'Sign in again' : 'Check sharing status';
         button.classList.remove('hidden');
-        status.textContent = 'Could not confirm sharing status. Check again before taking another action.';
+        status.textContent = needsSignIn
+          ? 'Your session ended. Sign in again to check this receipt’s sharing status.'
+          : 'Could not confirm sharing status. Check again before taking another action.';
       } finally {
         busy = false;
         button.disabled = false;
@@ -150,7 +157,11 @@ export function createReceiptCommunity(request) {
     }
 
     button.addEventListener('click', event => {
-      if (event.detail > 1) return;
+      if (event.detail > 1 || !panel.isConnected) return;
+      if (needsSignIn) {
+        onSignInRequired();
+        return;
+      }
       void run(!state ? 'status' : state.observation_count > 0 ? 'withdraw' : 'share');
     });
     panel.addEventListener('toggle', () => {

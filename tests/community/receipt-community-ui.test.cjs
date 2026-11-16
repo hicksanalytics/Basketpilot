@@ -78,14 +78,20 @@ function build(t, { sharing = true, signedIn = true, fixtureOwner = owner } = {}
 
   const fixtureUser = { id: fixtureOwner, email: 'fixture@example.test' };
   let user = signedIn ? fixtureUser : null;
-  const accessToken = 'fixture-token-' + fixtureOwner;
-  const controls = { operations: [], sessionExpired: false, lastSaved: null, loseShareResponse: false, beforeLines: null, beforeHistory: null, beforeDuplicate: null };
+  let authStateChanged;
+  const controls = { operations: [], sessionExpired: false, nextLogin: fixtureUser, loginError: null, reopenedReceipts: [], lastSaved: null, loseShareResponse: false, beforeLines: null, beforeHistory: null, beforeDuplicate: null };
   const client = {
     auth: {
       async getUser() { return { data: { user } }; },
       async signOut() { user = null; return {}; },
-      async signInWithPassword() { user = fixtureUser; return {}; },
-      onAuthStateChange() {}
+      async signInWithPassword() {
+        if (controls.loginError) return { error: controls.loginError };
+        user = controls.nextLogin;
+        controls.sessionExpired = false;
+        authStateChanged?.('SIGNED_IN', { user });
+        return {};
+      },
+      onAuthStateChange(callback) { authStateChanged = callback; }
     },
     from(table) {
       return {
@@ -115,10 +121,11 @@ function build(t, { sharing = true, signedIn = true, fixtureOwner = owner } = {}
           assert.equal(table, 'receipts');
           const userId = user?.id;
           const order = [];
-          let filterOwner, fingerprint, cursorTime, cursorId;
+          let filterOwner, filterId, fingerprint, cursorTime, cursorId;
           const query = {
             eq(column, value) {
               if (column === 'owner_id') filterOwner = value;
+              else if (column === 'id') filterId = value;
               else {
                 assert.equal(column, 'receipt_fingerprint');
                 assert.match(value, /^[a-f0-9]{64}$/);
@@ -138,8 +145,17 @@ function build(t, { sharing = true, signedIn = true, fixtureOwner = owner } = {}
               return query;
             },
             async maybeSingle() {
-              assert.equal(columns, 'id,receipt_items(id),receipt_discounts(id)');
               assert.equal(filterOwner, userId);
+              if (filterId) {
+                assert.match(columns, /^id,retailer,store_id,purchase_date,/);
+                controls.reopenedReceipts.push({ filterOwner, filterId });
+                const { rows } = await asUser(userId, tx => tx.query(
+                  'select id, retailer, store_id, purchase_date::text, subtotal as total from receipts where owner_id = $1 and id = $2',
+                  [filterOwner, filterId]
+                ));
+                return { data: rows[0] ?? null };
+              }
+              assert.equal(columns, 'id,receipt_items(id),receipt_discounts(id)');
               assert.ok(fingerprint);
               const { rows } = await asUser(userId, tx => tx.query(
                 `select r.id,
@@ -172,7 +188,7 @@ function build(t, { sharing = true, signedIn = true, fixtureOwner = owner } = {}
   };
 
   const handleConsent = createReceiptConsentHandler({
-    authenticate: async token => token === accessToken && !controls.sessionExpired ? user : null,
+    authenticate: async token => user && token === 'fixture-token-' + user.id && !controls.sessionExpired ? user : null,
     async setConsent({ receiptId: id, action, revision, previewToken }, { ownerId }) {
       controls.operations.push({ id, action, revision });
       const { rows } = await asUser(ownerId, tx => tx.query(
@@ -185,7 +201,7 @@ function build(t, { sharing = true, signedIn = true, fixtureOwner = owner } = {}
   const requestConsent = (receiptId, action, revision = null, previewToken = null) => requestReceiptConsent(
     { receiptId, action, revision, previewToken },
     {
-      getAccessToken: async () => user ? accessToken : null,
+      getAccessToken: async () => user ? 'fixture-token-' + user.id : null,
       fetchConsent: (url, options) => handleConsent(new Request(new URL(url, window.location), options))
     }
   );
@@ -282,12 +298,23 @@ test('history can share a previously saved receipt and recover a lost response b
   await until(() => !panel.isConnected && !byId('cloud-auth').classList.contains('hidden'), 'Signing out should remove saved receipt controls');
 });
 
-test('an expired history session cannot share and requires a fresh preview after session renewal', async t => {
-  const id = await writeReceipt({ purchase_date: '2024-11-02' });
+function signIn(byId) {
+  byId('auth-email').value = 'fixture@example.test';
+  byId('auth-password').value = 'fixture-pass';
+  byId('auth-login').click();
+}
+
+test('an expired session reopens the same older history receipt after sign-in with a fresh preview', async t => {
+  const id = await writeReceipt({ purchase_date: '2024-11-02', created_at: '2024-11-02T01:00:00Z' });
   await writeLine({ receipt_id: id });
-  const { byId, controls } = build(t);
+  for (let index = 0; index < 25; index++) {
+    await writeReceipt({ purchase_date: '2024-11-03', created_at: '2024-11-03T01:00:00Z' });
+  }
+  const { byId, controls, window } = build(t);
   const history = byId('cloud-history');
-  const getCard = () => [...history.children].find(card => card.textContent.includes('2024-11-02'));
+  const getCard = () => [...history.children].find(card => card.dataset.receiptId === id);
+  await until(() => !byId('cloud-history-more').hidden, 'Load older receipts should be available');
+  byId('cloud-history-more').click();
   await until(getCard, 'Previously saved receipt should load');
   const panel = panelIn(getCard());
   panel.querySelector('summary').click();
@@ -295,20 +322,96 @@ test('an expired history session cannot share and requires a fresh preview after
 
   controls.sessionExpired = true;
   share.click();
-  const check = await action(panel, 'Check sharing status');
-  assert.match(panel.querySelector('[role=status]').textContent, /Could not confirm sharing status/);
+  const recover = await action(panel, 'Sign in again');
+  assert.match(panel.querySelector('[role=status]').textContent, /Your session ended/);
   assert.equal(panel.querySelectorAll('li').length, 0);
   assert.equal(await countObservations(id), 0);
-  assert.deepEqual(controls.operations.map(op => op.action), ['status']);
+  assert.deepEqual(controls.operations, [{ id, action: 'status', revision: null }]);
+  recover.click();
+  assert.match(byId('auth-status').textContent, /same account/);
+  assert.equal(window.document.activeElement, byId('auth-email'));
+  assert.equal(history.children.length, 0);
 
-  controls.sessionExpired = false;
-  check.click();
-  const freshShare = await action(panel, 'Share 1 item price');
+  controls.loginError = new Error('Synthetic incorrect credentials');
+  signIn(byId);
+  await until(() => byId('auth-status').textContent.includes('incorrect credentials'), 'Failed login should preserve the recovery target');
+  controls.loginError = null;
+  signIn(byId);
+  await until(getCard, 'Original receipt should be reopened');
+  const reopened = panelIn(getCard());
+  const freshShare = await action(reopened, 'Share 1 item price');
+  assert.equal(reopened.open, true);
+  assert.equal(window.document.activeElement, reopened.querySelector('summary'));
+  assert.deepEqual(controls.reopenedReceipts, [{ filterOwner: owner, filterId: id }]);
   assert.equal(await countObservations(id), 0);
+  assert.deepEqual(controls.operations, [
+    { id, action: 'status', revision: null }, { id, action: 'status', revision: null }
+  ]);
+
+  byId('cloud-history-more').click();
+  await until(() => byId('cloud-history-more').hidden, 'History should finish loading without a duplicate card');
+  assert.equal([...history.children].filter(card => card.dataset.receiptId === id).length, 1);
   freshShare.click();
-  await action(panel, 'Withdraw shared prices');
+  await action(reopened, 'Withdraw shared prices');
   assert.equal(await countObservations(id), 1);
-  assert.deepEqual(controls.operations.map(op => op.action), ['status', 'status', 'share']);
+});
+
+test('an expired review session reopens the original review only for the same owner and revision', async t => {
+  const { byId, controls, review, window } = build(t);
+  await until(() => !byId('cloud-signed-in').classList.contains('hidden'), 'Fixture should be signed in');
+  review('12/12/2024');
+  byId('quick-save').click();
+  const getPanel = () => panelIn(byId('review-community'));
+  await until(getPanel, 'Saved review should have sharing controls');
+  const original = getPanel();
+  const share = await action(original, 'Share 1 item price');
+  controls.sessionExpired = true;
+  share.click();
+  (await action(original, 'Sign in again')).click();
+  assert.equal(original.isConnected, false);
+  signIn(byId);
+  await until(getPanel, 'Recovery should reopen the original review');
+  const reopened = getPanel();
+  const freshShare = await action(reopened, 'Share 1 item price');
+  assert.equal(await countObservations(controls.lastSaved), 0);
+  assert.deepEqual(controls.operations.map(op => op.action), ['status', 'status']);
+  assert.notEqual(freshShare, share);
+
+  controls.sessionExpired = true;
+  freshShare.click();
+  (await action(reopened, 'Sign in again')).click();
+  const amount = byId('items').querySelector('[aria-label="Paid amount"]');
+  amount.value = '12.34';
+  amount.dispatchEvent(new window.Event('input', { bubbles: true }));
+  signIn(byId);
+  await until(() => byId('cloud-status').textContent.includes('The review changed'), 'Edited review should go to private history');
+  assert.equal(getPanel(), undefined);
+  assert.equal(await countObservations(controls.lastSaved), 0);
+  assert.deepEqual(controls.operations.map(op => op.action), ['status', 'status']);
+});
+
+test('signing in as another account clears the old receipt recovery target', async t => {
+  const id = await writeReceipt({ purchase_date: '2024-11-04' });
+  await writeLine({ receipt_id: id });
+  const otherId = randomUUID();
+  const { byId, controls } = build(t);
+  const history = byId('cloud-history');
+  const getCard = () => [...history.children].find(card => card.dataset.receiptId === id);
+  await until(getCard, 'Previously saved receipt should load');
+  const panel = panelIn(getCard());
+  panel.querySelector('summary').click();
+  const share = await action(panel, 'Share 1 item price');
+  controls.sessionExpired = true;
+  share.click();
+  (await action(panel, 'Sign in again')).click();
+  controls.nextLogin = { id: otherId, email: 'other@example.test' };
+  signIn(byId);
+  await until(() => byId('cloud-status').textContent.includes('original account'), 'Wrong owner should lose the recovery target');
+  assert.equal(getCard(), undefined);
+  assert.equal(panel.isConnected, false);
+  assert.equal(await countObservations(id), 0);
+  assert.deepEqual(controls.reopenedReceipts, []);
+  assert.deepEqual(controls.operations, [{ id, action: 'status', revision: null }]);
 });
 
 test('a different signed-in owner cannot inspect or change sharing through the receipt endpoint', async t => {

@@ -144,9 +144,15 @@ export function createReceiptConsentHandler({ authenticate, setConsent }) {
   };
 }
 
+export class ReceiptConsentSignInRequired extends Error {
+  constructor() {
+    super('Sign in to check receipt sharing.');
+  }
+}
+
 export async function requestReceiptConsent(input, { getAccessToken, fetchConsent = globalThis.fetch }) {
   const accessToken = await getAccessToken();
-  if (!accessToken) throw new Error('Sign in to check receipt sharing.');
+  if (!accessToken) throw new ReceiptConsentSignInRequired();
   const response = await fetchConsent(consentPath, {
     method: 'POST',
     credentials: 'omit',
@@ -155,6 +161,7 @@ export async function requestReceiptConsent(input, { getAccessToken, fetchConsen
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + accessToken },
     body: JSON.stringify(input)
   });
+  if (response.status === 401) throw new ReceiptConsentSignInRequired();
   if (!response.ok) throw new Error('Receipt sharing status could not be confirmed.');
   return response.json();
 }
