@@ -39,12 +39,20 @@ function asAuthenticated(userId, callback) {
   });
 }
 
-async function consent(id, action, revision = null, userId = owner) {
+async function requestConsent(id, action, revision, token, userId = owner) {
   const { rows } = await asAuthenticated(userId, tx => tx.query(
-    'select * from receipt_community.set_consent($1, $2, $3)',
-    [receiptId(id), action, revision]
+    'select * from receipt_community.set_consent($1, $2, $3, $4)',
+    [receiptId(id), action, revision, token]
   ));
   return rows[0];
+}
+
+async function consent(id, action, revision = null, userId = owner) {
+  const token = action === 'share' && revision !== null
+    ? (await requestConsent(id, 'status', null, null, userId)).preview_token
+    : null;
+  const row = await requestConsent(id, action, revision, token, userId);
+  return result(row.outcome, row.revision, row.observation_count, row.eligible_count);
 }
 
 async function observations(id) {
@@ -101,6 +109,33 @@ test('withdrawal removes the prices and a delayed share cannot restore them', as
   assert.deepEqual(await consent(2, 'share', 0), result('stale', 2, 0, 1));
   assert.deepEqual(await observations(2), []);
   assert.deepEqual(await consent(2, 'share', 2), result('shared', 3, 1));
+});
+
+test('an owner must approve the exact preview even when the eligible count is unchanged', async () => {
+  await addReceipt(30);
+  await addItem(30, 301);
+  const preview = await requestConsent(30, 'status', null, null);
+  assert.deepEqual(preview.price_rows, [{
+    retailer: 'fixture', receipt_item_code: packageCode, package_name: 'Synthetic package, 24 ct',
+    store_id: '0101', location_name: 'Synthetic store', purchase_date: '2024-10-01', package_price_cents: 1000
+  }]);
+  assert.equal((await requestConsent(30, 'share', 0, null)).outcome, 'preview_changed');
+
+  await db.query('update public.receipt_items set quantity = 1 where id = $1', [itemId(301)]);
+  const changed = await requestConsent(30, 'share', 0, preview.preview_token);
+  assert.equal(changed.outcome, 'preview_changed');
+  assert.equal(changed.eligible_count, 1);
+  assert.equal(changed.revision, 0);
+  assert.equal(changed.price_rows[0].package_price_cents, 2000);
+  assert.notEqual(changed.preview_token, preview.preview_token);
+  assert.deepEqual(await observations(30), []);
+
+  const shared = await requestConsent(30, 'share', 0, changed.preview_token);
+  assert.equal(shared.outcome, 'shared');
+  assert.deepEqual(shared.price_rows, changed.price_rows);
+  assert.equal((await observations(30))[0].package_price_cents, 2000);
+  await db.query('update public.receipt_items set quantity = 2 where id = $1', [itemId(301)]);
+  assert.deepEqual((await requestConsent(30, 'status', null, null)).price_rows, shared.price_rows);
 });
 
 test('another account, missing identity, and anonymous role cannot use receipt consent', async () => {

@@ -19,7 +19,10 @@ async function consent(id, action, revision) {
   return db.transaction(async tx => {
     await tx.exec('set local role authenticated');
     await tx.query("select set_config('request.jwt.claim.sub', $1, true)", [owner]);
-    const { rows } = await tx.query('select * from receipt_community.set_consent($1,$2,$3)', [id, action, revision]);
+    const token = action === 'share'
+      ? (await tx.query("select preview_token from receipt_community.set_consent($1,'status')", [id])).rows[0].preview_token
+      : null;
+    const { rows } = await tx.query('select * from receipt_community.set_consent($1,$2,$3,$4)', [id, action, revision, token]);
     assert.equal(rows[0].outcome, action === 'share' ? 'shared' : 'withdrawn');
   });
 }

@@ -119,10 +119,10 @@ function build(t, { sharing = true, signedIn = true } = {}) {
 
   window.fixture = {
     createClient: () => client,
-    community: createReceiptCommunity(async (id, action, revision) => {
+    community: createReceiptCommunity(async (id, action, revision, token) => {
       controls.operations.push({ id, action, revision });
       const { rows } = await asUser(user?.id, tx => tx.query(
-        'select * from receipt_community.set_consent($1,$2,$3)', [id, action, revision]
+        'select * from receipt_community.set_consent($1,$2,$3,$4)', [id, action, revision, token]
       ));
       if (action === 'share' && controls.loseShareResponse) throw new Error('Synthetic lost response');
       return rows[0];
@@ -196,6 +196,9 @@ test('history can share a previously saved receipt and recover a lost response b
   assert.deepEqual(controls.operations, []);
   panel.querySelector('summary').click();
   const share = await action(panel, 'Share 1 item price');
+  assert.match(panel.querySelector('li').textContent, /Synthetic package, 24 ctSynthetic club · Nov 1, 2024 · \$10\.00 per package/);
+  assert.equal(panel.querySelector('time').dateTime, '2024-11-01');
+  assert.doesNotMatch(panel.querySelector('li').textContent, /SYNTHETIC PURCHASE/);
   controls.loseShareResponse = true;
   share.click();
   const check = await action(panel, 'Check sharing status');
@@ -268,12 +271,39 @@ test('history hides sharing for an ineligible receipt and reports stale consent 
   const eligible = panelIn(cardOn('2024-11-02'));
   eligible.querySelector('summary').click();
   const share = await action(eligible, 'Share 1 item price');
-  await asUser(owner, tx => tx.query("select * from receipt_community.set_consent($1,'share',0)", [eligibleId]));
+  await asUser(owner, async tx => {
+    const { rows: [preview] } = await tx.query("select preview_token from receipt_community.set_consent($1,'status')", [eligibleId]);
+    await tx.query("select * from receipt_community.set_consent($1,'share',0,$2)", [eligibleId, preview.preview_token]);
+  });
   share.click();
   await action(eligible, 'Withdraw shared prices');
   assert.match(eligible.textContent, /Sharing changed elsewhere/);
   assert.equal(await countObservations(eligibleId), 1);
   assert.deepEqual(controls.operations.filter(op => op.id === eligibleId).map(op => op.action), ['status', 'share']);
+});
+
+test('history shows a changed preview and requires a new tap before publishing', async t => {
+  const id = await writeReceipt({ purchase_date: '2024-11-04' });
+  await writeLine({ receipt_id: id });
+  const { byId } = build(t);
+  const history = byId('cloud-history');
+  await until(() => history.textContent.includes('2024-11-04'), 'Saved receipt should load');
+  const card = [...history.children].find(child => child.textContent.includes('2024-11-04'));
+  const panel = panelIn(card);
+  panel.querySelector('summary').click();
+  const share = await action(panel, 'Share 1 item price');
+  assert.match(panel.querySelector('li').textContent, /\$10\.00 per package/);
+
+  await db.query('update public.receipt_items set quantity = 1 where receipt_id = $1', [id]);
+  share.click();
+  await until(() => panel.textContent.includes('Review the updated prices'), 'Changed price should require fresh approval');
+  assert.match(panel.querySelector('li').textContent, /\$20\.00 per package/);
+  assert.equal(await countObservations(id), 0);
+
+  (await action(panel, 'Share 1 item price')).click();
+  await action(panel, 'Withdraw shared prices');
+  assert.equal(panel.querySelector('ul').getAttribute('aria-label'), 'Shared item prices');
+  assert.equal(await countObservations(id), 1);
 });
 
 test('an opt-in on receipt review appears in signed-out product search and a history withdrawal removes it', async t => {
@@ -301,6 +331,9 @@ test('an opt-in on receipt review appears in signed-out product search and a his
   await until(() => !byId('review-community').hidden, 'Review sharing panel should appear');
   const reviewPanel = panelIn(byId('review-community'));
   const share = await action(reviewPanel, 'Share 1 item price');
+  assert.equal(reviewPanel.querySelector('li strong').textContent, title);
+  assert.equal(reviewPanel.querySelector('time').dateTime, '2024-10-27');
+  assert.match(reviewPanel.querySelector('li').textContent, /\$13\.46 per package/);
 
   const sharedPrices = productPage.byId('community-prices');
   const searchStatus = productPage.byId('community-status');

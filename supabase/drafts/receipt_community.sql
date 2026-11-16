@@ -88,9 +88,13 @@ revoke all on receipt_community.eligible_lines from public, anon, authenticated;
 create function receipt_community.set_consent(
   p_receipt_id uuid,
   p_action text,
-  p_expected_revision integer default null
+  p_expected_revision integer default null,
+  p_preview_token text default null
 )
-returns table (outcome text, revision integer, observation_count integer, eligible_count integer)
+returns table (
+  outcome text, revision integer, observation_count integer, eligible_count integer,
+  price_rows jsonb, preview_token text
+)
 language plpgsql
 security definer
 set search_path = ''
@@ -101,6 +105,9 @@ declare
   v_count integer;
   v_eligible_count integer;
   v_outcome text;
+  v_eligible receipt_community.eligible_lines[];
+  v_price_rows jsonb := '[]'::jsonb;
+  v_preview_token text;
 begin
   if p_action is null or p_action not in ('status', 'share', 'withdraw')
     or (p_action <> 'status' and (p_expected_revision is null or p_expected_revision < 0)) then
@@ -125,18 +132,52 @@ begin
   from receipt_community.observations o
   where o.receipt_id = p_receipt_id;
 
-  if p_action = 'status' or p_expected_revision <> v_revision then
-    select count(*)::integer into v_eligible_count
+  if p_action <> 'withdraw' or p_expected_revision <> v_revision then
+    -- Use the same captured eligible lines for the quote and the eventual insert.
+    select array_agg(e), count(*)::integer into v_eligible, v_eligible_count
     from receipt_community.eligible_lines e
     where e.receipt_id = p_receipt_id;
+
+    with displayed as (
+      select e.retailer, e.store_id, e.receipt_item_code, e.purchase_date, e.package_price_cents
+      from unnest(v_eligible) e where v_count = 0
+      union all
+      select o.retailer, o.store_id, o.receipt_item_code, o.purchase_date, o.package_price_cents
+      from receipt_community.observations o where o.receipt_id = p_receipt_id
+    )
+    select coalesce(jsonb_agg(jsonb_build_object(
+      'retailer', d.retailer,
+      'receipt_item_code', d.receipt_item_code,
+      'package_name', p.package_name,
+      'store_id', d.store_id,
+      'location_name', s.location_name,
+      'purchase_date', d.purchase_date,
+      'package_price_cents', d.package_price_cents
+    ) order by p.package_name, d.receipt_item_code, d.purchase_date, d.package_price_cents), '[]'::jsonb)
+    into v_price_rows
+    from displayed d
+    join receipt_community.verified_packages p using (retailer, receipt_item_code)
+    join receipt_community.verified_stores s using (retailer, store_id);
+
+    if v_count = 0 then
+      v_preview_token := md5(v_price_rows::text);
+    end if;
+  end if;
+
+  if p_action = 'status' or p_expected_revision <> v_revision then
     v_outcome := case when p_action = 'status' then 'status' else 'stale' end;
-    return query select v_outcome, v_revision, v_count, v_eligible_count;
+    return query select v_outcome, v_revision, v_count, v_eligible_count, v_price_rows, v_preview_token;
     return;
   end if;
 
   if p_action = 'share' then
     if v_count > 0 then
-      return query select 'shared', v_revision, v_count, null::integer;
+      return query select 'shared', v_revision, v_count, null::integer, v_price_rows, null::text;
+      return;
+    end if;
+
+    if p_preview_token is distinct from v_preview_token then
+      return query select 'preview_changed', v_revision, v_count, v_eligible_count, v_price_rows, v_preview_token;
       return;
     end if;
 
@@ -148,8 +189,7 @@ begin
     )
     select e.receipt_item_id, e.receipt_id, e.retailer, e.store_id,
       e.receipt_item_code, e.purchase_date, e.package_price_cents
-    from receipt_community.eligible_lines e
-    where e.receipt_id = p_receipt_id
+    from unnest(v_eligible) e
     on conflict (receipt_item_id) do nothing;
 
     get diagnostics v_count = row_count;
@@ -165,14 +205,14 @@ begin
   values (p_receipt_id, v_revision)
   on conflict (receipt_id) do update set revision = excluded.revision;
 
-  return query select v_outcome, v_revision, v_count, null::integer;
+  return query select v_outcome, v_revision, v_count, null::integer, v_price_rows, null::text;
 end;
 $function$;
 
-revoke all on function receipt_community.set_consent(uuid, text, integer)
+revoke all on function receipt_community.set_consent(uuid, text, integer, text)
   from public, anon, authenticated;
 grant usage on schema receipt_community to authenticated;
-grant execute on function receipt_community.set_consent(uuid, text, integer)
+grant execute on function receipt_community.set_consent(uuid, text, integer, text)
   to authenticated;
 
 -- A future lookup endpoint can expose this projection after activation.
