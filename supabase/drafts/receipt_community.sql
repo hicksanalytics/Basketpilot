@@ -46,10 +46,19 @@ create table receipt_community.observations (
 create index on receipt_community.observations (receipt_id);
 create index on receipt_community.observations (retailer, receipt_item_code, purchase_date desc);
 
+-- A hold stays with the private line through withdrawal and can be cleared
+-- independently of consent. Deleting the line clears both records.
+create table receipt_community.observation_holds (
+  receipt_item_id uuid primary key references public.receipt_items(id) on delete cascade,
+  reason text not null check (reason in ('suspect_price', 'package_mismatch', 'store_mismatch')),
+  created_at timestamptz not null default now()
+);
+
 alter table receipt_community.verified_stores enable row level security;
 alter table receipt_community.verified_packages enable row level security;
 alter table receipt_community.consent_revisions enable row level security;
 alter table receipt_community.observations enable row level security;
+alter table receipt_community.observation_holds enable row level security;
 
 revoke all on all tables in schema receipt_community from public, anon, authenticated;
 
@@ -78,6 +87,7 @@ with receipts_checked as (
   select i.id as receipt_item_id, r.id as receipt_id, r.retailer, r.store_id,
     p.receipt_item_code, r.purchase_date, i.gross_line_total, i.quantity,
     coalesce(r.receipt_reason, case
+      when h.receipt_item_id is not null then 'on_hold'
       when i.user_reviewed is not true then 'review'
       when p.receipt_item_code is null then 'package_unverified'
       when (
@@ -88,6 +98,7 @@ with receipts_checked as (
     end) as exclusion_reason
   from receipts_checked r
   left join public.receipt_items i on i.receipt_id = r.id
+  left join receipt_community.observation_holds h on h.receipt_item_id = i.id
   left join receipt_community.verified_packages p
     on p.retailer = r.retailer and p.receipt_item_code = i.retailer_item_code
 )
@@ -166,11 +177,14 @@ begin
     v_eligible_count := coalesce(cardinality(v_eligible), 0);
 
     with displayed as (
-      select e.retailer, e.store_id, e.receipt_item_code, e.purchase_date, e.package_price_cents
+      select e.retailer, e.store_id, e.receipt_item_code, e.purchase_date, e.package_price_cents, false as on_hold
       from unnest(v_eligible) e where v_count = 0
       union all
-      select o.retailer, o.store_id, o.receipt_item_code, o.purchase_date, o.package_price_cents
-      from receipt_community.observations o where o.receipt_id = p_receipt_id
+      select o.retailer, o.store_id, o.receipt_item_code, o.purchase_date, o.package_price_cents,
+        h.receipt_item_id is not null
+      from receipt_community.observations o
+      left join receipt_community.observation_holds h on h.receipt_item_id = o.receipt_item_id
+      where o.receipt_id = p_receipt_id
     )
     select coalesce(jsonb_agg(jsonb_build_object(
       'retailer', d.retailer,
@@ -179,7 +193,8 @@ begin
       'store_id', d.store_id,
       'location_name', s.location_name,
       'purchase_date', d.purchase_date,
-      'package_price_cents', d.package_price_cents
+      'package_price_cents', d.package_price_cents,
+      'on_hold', d.on_hold
     ) order by p.package_name, d.receipt_item_code, d.purchase_date, d.package_price_cents), '[]'::jsonb)
     into v_price_rows
     from displayed d
@@ -242,6 +257,16 @@ grant usage on schema receipt_community to authenticated;
 grant execute on function receipt_community.set_consent(uuid, text, integer, text)
   to authenticated;
 
+-- Use one visibility rule for both candidate selection and returned history.
+create view receipt_community.visible_observations as
+select o.retailer, o.store_id, o.receipt_item_code, o.purchase_date, o.package_price_cents
+from receipt_community.observations o
+where not exists (
+  select 1 from receipt_community.observation_holds h where h.receipt_item_id = o.receipt_item_id
+);
+
+revoke all on receipt_community.visible_observations from public, anon, authenticated;
+
 -- A future lookup endpoint can expose this projection after activation.
 -- Identical visible prices collapse without revealing contribution counts.
 create function receipt_community.package_price_history(
@@ -258,7 +283,7 @@ set search_path = ''
 as $function$
   select distinct o.retailer, o.receipt_item_code, p.package_name, o.store_id,
     s.location_name, o.purchase_date, o.package_price_cents
-  from receipt_community.observations o
+  from receipt_community.visible_observations o
   join receipt_community.verified_packages p
     using (retailer, receipt_item_code)
   join receipt_community.verified_stores s
@@ -293,7 +318,7 @@ as $function$
         and strpos(lower(p.package_name), lower(btrim(p_name))) > 0)
     )
     and exists (
-      select 1 from receipt_community.observations o
+      select 1 from receipt_community.visible_observations o
       where o.retailer = p.retailer and o.receipt_item_code = p.receipt_item_code
     )
     order by p.package_name, p.retailer, p.receipt_item_code

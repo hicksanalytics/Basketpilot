@@ -117,7 +117,8 @@ test('an owner must approve the exact preview even when the eligible count is un
   const preview = await requestConsent(30, 'status', null, null);
   assert.deepEqual(preview.price_rows, [{
     retailer: 'fixture', receipt_item_code: packageCode, package_name: 'Synthetic package, 24 ct',
-    store_id: '0101', location_name: 'Synthetic store', purchase_date: '2024-10-01', package_price_cents: 1000
+    store_id: '0101', location_name: 'Synthetic store', purchase_date: '2024-10-01', package_price_cents: 1000,
+    on_hold: false
   }]);
   assert.equal((await requestConsent(30, 'share', 0, null)).outcome, 'preview_changed');
 
@@ -158,6 +159,9 @@ test('owner has no direct access to the observation or allowlist tables', async 
   for (const statement of [
     'select * from receipt_community.observations',
     'select * from receipt_community.checked_lines',
+    'select * from receipt_community.observation_holds',
+    'delete from receipt_community.observation_holds',
+    'select * from receipt_community.visible_observations',
     "select * from receipt_community.package_price_history('fixture', '0000000421')",
     "select * from receipt_community.search_package_prices('Synthetic')",
     'delete from receipt_community.observations',
@@ -260,4 +264,68 @@ test('package history contains only dated, distinct prices for the exact verifie
   assert.deepEqual(await history(), [old]);
   await asAuthenticated(owner, tx => tx.query('delete from public.receipts where id = $1', [receiptId(20)]));
   assert.deepEqual(await history(), []);
+});
+
+test('holds hide individual prices from name and barcode lookup while preserving withdrawal', async () => {
+  const code = '0000000940';
+  const gtin = '00012345678905';
+  await db.query('insert into receipt_community.verified_packages values ($1,$2,$3,$4,$5)',
+    ['fixture', code, 'Moderation fixture, 12 ct', 'https://example.com/moderation', gtin]);
+  for (const id of [40, 41]) {
+    await addReceipt(id);
+    await addItem(id, id * 10, { code });
+    assert.equal((await consent(id, 'share', 0)).outcome, 'shared');
+  }
+  const namePrices = () => db.query("select * from receipt_community.search_package_prices('Moderation fixture')");
+  const barcodePrices = () => db.query('select * from receipt_community.search_package_prices(null, $1)', [gtin]);
+  const hold = id => db.query('insert into receipt_community.observation_holds (receipt_item_id, reason) values ($1,$2)',
+    [itemId(id * 10), 'suspect_price']);
+  const release = id => db.query('delete from receipt_community.observation_holds where receipt_item_id = $1', [itemId(id * 10)]);
+
+  assert.equal((await barcodePrices()).rows.length, 1);
+  await hold(40);
+  assert.equal((await namePrices()).rows.length, 1, 'The independent observation stays visible');
+  await hold(41);
+  assert.deepEqual((await namePrices()).rows, []);
+  assert.deepEqual((await barcodePrices()).rows, []);
+
+  const status = await requestConsent(40, 'status', null, null);
+  assert.equal(status.observation_count, 1);
+  assert.equal(status.price_rows[0].on_hold, true);
+  assert.equal(status.price_rows[0].reason, undefined);
+  assert.equal((await consent(40, 'withdraw', 1)).outcome, 'withdrawn');
+
+  const preview = await requestConsent(40, 'status', null, null);
+  assert.equal(preview.eligible_count, 0);
+  assert.deepEqual(preview.exclusion_counts, { on_hold: 1 });
+  assert.equal((await requestConsent(40, 'share', preview.revision, preview.preview_token)).outcome, 'ineligible');
+
+  await release(40);
+  assert.deepEqual((await namePrices()).rows, [], 'Clearing a hold cannot restore withdrawn consent');
+  await release(41);
+  const { rows } = await barcodePrices();
+  assert.equal(rows.length, 1, 'The other receipt still has consent');
+  assert.equal(rows[0].on_hold, undefined);
+
+  await hold(41);
+  await asAuthenticated(owner, tx => tx.query('delete from public.receipts where id = $1', [receiptId(41)]));
+  assert.deepEqual((await db.query('select * from receipt_community.observation_holds where receipt_item_id = $1', [itemId(410)])).rows, []);
+  assert.deepEqual((await namePrices()).rows, []);
+});
+
+test('a hold placed after preview requires approval for the changed list', async () => {
+  await addReceipt(42, { subtotal: 40 });
+  await addItem(42, 420);
+  await addItem(42, 421);
+  const preview = await requestConsent(42, 'status', null, null);
+  assert.equal(preview.eligible_count, 2);
+  await db.query('insert into receipt_community.observation_holds (receipt_item_id, reason) values ($1,$2)',
+    [itemId(420), 'store_mismatch']);
+  const changed = await requestConsent(42, 'share', preview.revision, preview.preview_token);
+  assert.equal(changed.outcome, 'preview_changed');
+  assert.equal(changed.eligible_count, 1);
+  assert.deepEqual(changed.exclusion_counts, { on_hold: 1 });
+  assert.deepEqual(await observations(42), []);
+  assert.equal((await requestConsent(42, 'share', changed.revision, changed.preview_token)).outcome, 'shared');
+  assert.deepEqual((await observations(42)).map(row => row.receipt_item_id), [itemId(421)]);
 });

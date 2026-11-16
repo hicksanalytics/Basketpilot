@@ -515,3 +515,35 @@ test('signing out discards a pending older page and clears the history controls'
   assert.equal(more.hidden, true);
   assert.equal(more.ownerDocument.defaultView.getComputedStyle(more).display, 'none');
 });
+
+test('history shows a held price privately and keeps withdrawal available', async t => {
+  const fixtureOwner = randomUUID();
+  const code = '0000000941';
+  const id = await writeReceipt({ owner_id: fixtureOwner });
+  await db.query('insert into receipt_community.verified_packages values ($1,$2,$3,$4)',
+    ['sams', code, 'Fixture coffee, 36 ct', 'https://example.com/coffee']);
+  await writeLine({ receipt_id: id, retailer_item_code: code });
+  await asUser(fixtureOwner, async tx => {
+    const { rows: [preview] } = await tx.query("select preview_token from receipt_community.set_consent($1,'status')", [id]);
+    await tx.query("select * from receipt_community.set_consent($1,'share',0,$2)", [id, preview.preview_token]);
+  });
+  assert.equal((await readCommunityPrices(db, { name: 'Fixture coffee', packageGtin: null })).length, 1);
+  await db.query(`insert into receipt_community.observation_holds (receipt_item_id, reason)
+    select id, 'package_mismatch' from receipt_items where receipt_id = $1`, [id]);
+
+  const { byId } = build(t, { fixtureOwner });
+  const history = byId('cloud-history');
+  await until(() => history.querySelector('.cloud-history-card'), 'History should load the held receipt');
+  const panel = panelIn(history.firstElementChild);
+  panel.querySelector('summary').click();
+  const withdraw = await action(panel, 'Withdraw shared prices');
+  assert.match(panel.textContent, /Under review and hidden from community lookup/);
+  assert.doesNotMatch(panel.textContent, /package_mismatch/);
+  assert.deepEqual(await readCommunityPrices(db, { name: 'Fixture coffee', packageGtin: null }), []);
+  withdraw.click();
+  (await action(panel, 'Check eligible prices')).click();
+  await until(() => panel.textContent.includes('1 item price is under review'), 'Held item should remain excluded');
+  assert.ok(panel.querySelector('button').classList.contains('hidden'));
+  assert.equal(await countObservations(id), 0);
+  assert.deepEqual((await db.query('select id from receipts where id = $1', [id])).rows, [{ id }]);
+});

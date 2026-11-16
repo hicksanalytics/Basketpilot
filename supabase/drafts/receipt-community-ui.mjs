@@ -61,6 +61,12 @@ export function createReceiptCommunity(request) {
         time.textContent = date.format(new Date(price.purchase_date + 'T00:00:00Z'));
         details.append(price.location_name, ' · ', time, ' · ', money.format(price.package_price_cents / 100), ' per package');
         item.append(name, details);
+        if (price.on_hold) {
+          const note = doc.createElement('div');
+          note.className = 'muted';
+          note.textContent = 'Under review and hidden from community lookup.';
+          item.append(note);
+        }
         prices.append(item);
       }
       prices.hidden = rows.length === 0;
@@ -80,6 +86,7 @@ export function createReceiptCommunity(request) {
         const count = counts[reason];
         if (count) add(label(count) + (count === 1 ? ' needs ' : ' need ') + message);
       }
+      if (counts.on_hold) add(label(counts.on_hold) + (counts.on_hold === 1 ? ' is' : ' are') + ' under review.');
       exclusions.hidden = !exclusions.childElementCount;
     }
 
@@ -87,18 +94,23 @@ export function createReceiptCommunity(request) {
       state = data;
       const shared = data.observation_count > 0;
       const canShare = !shared && data.eligible_count > 0 && data.preview_token;
+      const held = data.price_rows.filter(price => price.on_hold).length;
+      const visible = data.observation_count - held;
+      const sharedStatus = held
+        ? (visible ? label(visible) : 'No item prices') + ' visible in community lookup. ' + label(held) + ' under review.'
+        : label(data.observation_count) + ' shared.';
       renderPrices(data.price_rows, shared);
       renderExclusions(shared ? {} : data.exclusion_counts ?? {});
       button.classList.toggle('hidden', !shared && !canShare);
       button.textContent = shared ? 'Withdraw shared prices' : canShare ? 'Share ' + label(data.eligible_count) : '';
       if (data.outcome === 'stale') {
         status.textContent = shared
-          ? 'Sharing changed elsewhere. ' + label(data.observation_count) + ' shared.'
+          ? 'Sharing changed elsewhere. ' + sharedStatus
           : 'Sharing changed elsewhere. This receipt is currently private.';
       } else if (data.outcome === 'preview_changed' && canShare) {
         status.textContent = 'The eligible prices changed. Review the updated prices before sharing.';
       } else if (shared) {
-        status.textContent = label(data.observation_count) + ' shared.';
+        status.textContent = sharedStatus;
       } else if (action === 'withdraw') {
         status.textContent = 'Shared prices withdrawn. Your saved receipt is still in your private history.';
         // A fresh status is required before another opt-in.

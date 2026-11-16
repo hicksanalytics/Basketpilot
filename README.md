@@ -41,6 +41,8 @@ The SQL in `supabase/drafts/receipt_community.sql` runs against a synthetic Post
 
 Eligibility requires a reviewed line, an exact retailer item code and store ID in independently curated lists, and a reconciled subtotal. Receipts with discounts are excluded until their impact can be determined. A store ID match identifies the location recorded on the receipt. The receipt itself is shopper-supplied.
 
+The draft supports an internal hold for one receipt line when a price, package, or store attribution needs review. Both community search and package history omit held observations. Owners can still withdraw consent from private history. A hold survives withdrawal and prevents that line from being submitted again until review is complete. Clearing the hold restores a price only while consent still exists. Deleting the private line removes the hold and its observation.
+
 See [Middle Tennessee community catalog evidence](docs/community-catalog-evidence.md) for example store and item IDs, gaps in receipt-format evidence, and examples where the orderable package matters.
 
 ```sh
