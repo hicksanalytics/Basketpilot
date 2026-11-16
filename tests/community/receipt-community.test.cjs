@@ -330,6 +330,91 @@ test('a hold placed after preview requires approval for the changed list', async
   assert.deepEqual((await observations(42)).map(row => row.receipt_item_id), [itemId(421)]);
 });
 
+test('an operator can hold one exact public price across all contributing receipts', async () => {
+  const code = '0000000955';
+  const gtin = '00012345678905';
+  await db.query('insert into receipt_community.verified_packages values ($1,$2,$3,$4,$5,$6)',
+    ['fixture', code, 'Operator fixture, 12 ct', 'https://example.com/operator', gtin, 'https://example.com/operator-gtin']);
+  for (const [id, gross] of [[70, 20], [71, 20], [72, 22], [73, 20]]) {
+    await addReceipt(id, { subtotal: gross });
+    await addItem(id, id * 10, { code, gross });
+    if (id !== 73) assert.equal((await consent(id, 'share', 0)).outcome, 'shared');
+  }
+  const operator = (action, reason, price = 1000) => db.transaction(async tx => {
+    await tx.exec('set local role receipt_community_moderator');
+    const { rows: [row] } = await tx.query(
+      'select receipt_community.set_public_price_hold($1,$2,$3,$4,$5,$6,$7) as changed',
+      ['fixture', '0101', code, '2024-10-01', price, action, reason]
+    );
+    return row.changed;
+  });
+  const amounts = async (name, barcode = null) => db.transaction(async tx => {
+    await tx.exec('set local role receipt_community_reader');
+    const { rows } = await tx.query(
+      'select package_price_cents from receipt_community.search_package_prices($1,$2) order by package_price_cents',
+      [name, barcode]
+    );
+    return rows.map(row => row.package_price_cents);
+  });
+  const pending = await requestConsent(73, 'status', null, null);
+  assert.equal(pending.eligible_count, 1);
+  assert.deepEqual(await amounts('Operator fixture'), [1000, 1100]);
+  assert.equal(await operator('place', 'suspect_price', 2000), false);
+  assert.equal(await operator('place', 'suspect_price'), true);
+  assert.equal(await operator('place', 'suspect_price'), false);
+  assert.deepEqual(await amounts('Operator fixture'), [1100]);
+  assert.deepEqual(await amounts(null, gtin), [1100]);
+
+  for (const id of [70, 71]) {
+    const status = await requestConsent(id, 'status', null, null);
+    assert.equal(status.observation_count, 1);
+    assert.equal(status.price_rows[0].on_hold, true);
+    assert.equal(status.price_rows[0].reason, undefined);
+  }
+  const changed = await requestConsent(73, 'share', pending.revision, pending.preview_token);
+  assert.equal(changed.outcome, 'preview_changed');
+  assert.deepEqual(changed.exclusion_counts, { on_hold: 1 });
+  assert.deepEqual(await observations(73), []);
+  assert.equal((await consent(70, 'withdraw', 1)).outcome, 'withdrawn');
+
+  assert.equal(await operator('clear', null), true);
+  assert.equal(await operator('clear', null), false);
+  assert.deepEqual(await amounts('Operator fixture'), [1000, 1100]);
+  assert.deepEqual(await observations(70), []);
+  assert.deepEqual(await observations(73), []);
+  assert.equal((await observations(71)).length, 1);
+});
+
+test('the unassigned moderation role can run only the exact price hold operation', async () => {
+  for (const role of ['anon', 'authenticated', 'receipt_community_consent', 'receipt_community_reader']) {
+    await assert.rejects(db.transaction(async tx => {
+      await tx.exec('set local role ' + role);
+      await tx.query("select receipt_community.set_public_price_hold('fixture','0101',$1,'2024-10-01',1000,'clear')",
+        [packageCode]);
+    }), { code: '42501' });
+  }
+  for (const statement of [
+    'select * from public.receipts', 'select * from receipt_community.price_holds',
+    'select * from receipt_community.observations_with_hold',
+    'select * from receipt_community.lookup_price_rows',
+    'delete from receipt_community.observation_holds', "select receipt_community.set_consent(null,'status')"
+  ]) {
+    await assert.rejects(db.transaction(async tx => {
+      await tx.exec('set local role receipt_community_moderator');
+      await tx.query(statement);
+    }), { code: '42501' });
+  }
+  await assert.rejects(db.transaction(async tx => {
+    await tx.exec('set local role receipt_community_moderator');
+    await tx.query("select receipt_community.set_public_price_hold('fixture','0101',$1,'2024-10-01',1000,'place','unknown')",
+      [packageCode]);
+  }), { code: '22023' });
+  const { rows } = await db.query(`select rolcanlogin, (
+    select count(*)::int from pg_auth_members where roleid = pg_roles.oid
+  ) as members from pg_roles where rolname = 'receipt_community_moderator'`);
+  assert.deepEqual(rows, [{ rolcanlogin: false, members: 0 }]);
+});
+
 test('curated barcode entries require a valid normalized GTIN and an evidence link', async () => {
   const insert = (gtin, evidence) => db.query(
     'insert into receipt_community.verified_packages values ($1,$2,$3,$4,$5,$6)',

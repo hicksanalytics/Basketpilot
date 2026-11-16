@@ -701,7 +701,7 @@ test('signing out discards a pending older page and clears the history controls'
   assert.equal(more.ownerDocument.defaultView.getComputedStyle(more).display, 'none');
 });
 
-test('history shows a held price privately and keeps withdrawal available', async t => {
+test('history shows a held public price privately and keeps withdrawal available', async t => {
   const fixtureOwner = randomUUID();
   const code = '0000000941';
   const id = await writeReceipt({ owner_id: fixtureOwner });
@@ -713,8 +713,14 @@ test('history shows a held price privately and keeps withdrawal available', asyn
     await tx.query("select * from receipt_community.set_consent($1,'share',0,$2)", [id, preview.preview_token]);
   });
   assert.equal((await readCommunityPrices(db, { name: 'Fixture coffee', packageGtin: null })).length, 1);
-  await db.query(`insert into receipt_community.observation_holds (receipt_item_id, reason)
-    select id, 'package_mismatch' from receipt_items where receipt_id = $1`, [id]);
+  await db.transaction(async tx => {
+    await tx.exec('set local role receipt_community_moderator');
+    const { rows } = await tx.query(
+      "select receipt_community.set_public_price_hold('sams',$1,$2,'2024-10-01',1000,'place','package_mismatch') as changed",
+      [store, code]
+    );
+    assert.deepEqual(rows, [{ changed: true }]);
+  });
 
   const { byId } = build(t, { fixtureOwner });
   const history = byId('cloud-history');

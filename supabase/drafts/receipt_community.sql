@@ -81,13 +81,40 @@ create table receipt_community.observation_holds (
   created_at timestamptz not null default now()
 );
 
+-- An exact public price can be under review even when multiple receipts
+-- contributed the same amount. This hold has no link to a private receipt.
+create table receipt_community.price_holds (
+  retailer text not null,
+  store_id text not null,
+  receipt_item_code text not null,
+  purchase_date date not null,
+  package_price_cents integer not null check (package_price_cents > 0),
+  reason text not null check (reason in ('suspect_price', 'package_mismatch', 'store_mismatch')),
+  created_at timestamptz not null default now(),
+  primary key (retailer, store_id, receipt_item_code, purchase_date, package_price_cents),
+  foreign key (retailer, store_id)
+    references receipt_community.verified_stores(retailer, store_id) on delete cascade,
+  foreign key (retailer, receipt_item_code)
+    references receipt_community.verified_packages(retailer, receipt_item_code) on delete cascade
+);
+
 alter table receipt_community.verified_stores enable row level security;
 alter table receipt_community.verified_packages enable row level security;
 alter table receipt_community.consent_revisions enable row level security;
 alter table receipt_community.observations enable row level security;
 alter table receipt_community.observation_holds enable row level security;
+alter table receipt_community.price_holds enable row level security;
 
 revoke all on all tables in schema receipt_community from public, anon, authenticated;
+
+-- Use one hold predicate for the owner's existing observations and public lookup.
+create view receipt_community.observations_with_hold as
+select o.*, (line_hold.receipt_item_id is not null or price_hold.retailer is not null) as on_hold
+from receipt_community.observations o
+left join receipt_community.observation_holds line_hold using (receipt_item_id)
+left join receipt_community.price_holds price_hold using (retailer, store_id, receipt_item_code, purchase_date, package_price_cents);
+
+revoke all on receipt_community.observations_with_hold from public, anon, authenticated;
 
 -- The same checks drive the preview, exclusions, and inserts. Receipt-wide
 -- checks take precedence over line checks. Source IDs stay internal.
@@ -128,13 +155,17 @@ with receipts_checked as (
   left join receipt_community.observation_holds h on h.receipt_item_id = i.id
   left join receipt_community.verified_packages p
     on p.retailer = r.retailer and p.receipt_item_code = i.retailer_item_code
-)
-select receipt_item_id, receipt_id, retailer, store_id, receipt_item_code,
-  purchase_date, exclusion_reason,
-  case when exclusion_reason is null then
+), eligible_amounts as (
+  select l.*, case when exclusion_reason is null then
     (gross_line_total * 100 / quantity)::integer
   end as package_price_cents
-from lines_checked;
+  from lines_checked l
+)
+select l.receipt_item_id, l.receipt_id, l.retailer, l.store_id, l.receipt_item_code, l.purchase_date,
+  case when h.retailer is not null then 'on_hold' else l.exclusion_reason end as exclusion_reason,
+  case when h.retailer is null then l.package_price_cents end as package_price_cents
+from eligible_amounts l
+left join receipt_community.price_holds h using (retailer, store_id, receipt_item_code, purchase_date, package_price_cents);
 
 revoke all on receipt_community.checked_lines from public, anon, authenticated;
 
@@ -207,10 +238,8 @@ begin
       select e.retailer, e.store_id, e.receipt_item_code, e.purchase_date, e.package_price_cents, false as on_hold
       from unnest(v_eligible) e where v_count = 0
       union all
-      select o.retailer, o.store_id, o.receipt_item_code, o.purchase_date, o.package_price_cents,
-        h.receipt_item_id is not null
-      from receipt_community.observations o
-      left join receipt_community.observation_holds h on h.receipt_item_id = o.receipt_item_id
+      select o.retailer, o.store_id, o.receipt_item_code, o.purchase_date, o.package_price_cents, o.on_hold
+      from receipt_community.observations_with_hold o
       where o.receipt_id = p_receipt_id
     )
     select coalesce(jsonb_agg(jsonb_build_object(
@@ -291,10 +320,8 @@ grant execute on function receipt_community.set_consent(uuid, text, integer, tex
 -- Use one visibility rule for both candidate selection and returned history.
 create view receipt_community.visible_observations as
 select distinct o.retailer, o.store_id, o.receipt_item_code, o.purchase_date, o.package_price_cents
-from receipt_community.observations o
-where not exists (
-  select 1 from receipt_community.observation_holds h where h.receipt_item_id = o.receipt_item_id
-);
+from receipt_community.observations_with_hold o
+where not o.on_hold;
 
 revoke all on receipt_community.visible_observations from public, anon, authenticated;
 
@@ -313,6 +340,58 @@ join receipt_community.verified_stores s
 revoke all on receipt_community.lookup_price_rows from public, anon, authenticated;
 grant usage on schema receipt_community to receipt_community_reader;
 grant select on receipt_community.lookup_price_rows to receipt_community_reader;
+
+-- Future trusted operators may assume this role. The role has no members in this draft.
+create role receipt_community_moderator nologin noinherit;
+
+create function receipt_community.set_public_price_hold(
+  p_retailer text,
+  p_store_id text,
+  p_receipt_item_code text,
+  p_purchase_date date,
+  p_package_price_cents integer,
+  p_action text,
+  p_reason text default null
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if p_retailer is null or p_store_id is null or p_receipt_item_code is null
+    or p_purchase_date is null or not isfinite(p_purchase_date)
+    or p_package_price_cents is null or p_package_price_cents <= 0
+    or p_action is null or p_action not in ('place', 'clear')
+    or (p_action = 'place' and (p_reason in ('suspect_price', 'package_mismatch', 'store_mismatch')) is not true)
+    or (p_action = 'clear' and p_reason is not null) then
+    raise exception using errcode = '22023', message = 'Invalid price hold request';
+  end if;
+
+  if p_action = 'clear' then
+    delete from receipt_community.price_holds h
+    where (h.retailer, h.store_id, h.receipt_item_code, h.purchase_date, h.package_price_cents)
+      = (p_retailer, p_store_id, p_receipt_item_code, p_purchase_date, p_package_price_cents);
+    return found;
+  end if;
+
+  insert into receipt_community.price_holds (retailer, store_id, receipt_item_code, purchase_date, package_price_cents, reason)
+  select p_retailer, p_store_id, p_receipt_item_code, p_purchase_date, p_package_price_cents, p_reason
+  where exists (
+    select 1 from receipt_community.lookup_price_rows p
+    where (p.retailer, p.store_id, p.receipt_item_code, p.purchase_date, p.package_price_cents)
+      = (p_retailer, p_store_id, p_receipt_item_code, p_purchase_date, p_package_price_cents)
+  )
+  on conflict do nothing;
+  return found;
+end;
+$function$;
+
+revoke all on function receipt_community.set_public_price_hold(text, text, text, date, integer, text, text)
+  from public, anon, authenticated;
+grant usage on schema receipt_community to receipt_community_moderator;
+grant execute on function receipt_community.set_public_price_hold(text, text, text, date, integer, text, text)
+  to receipt_community_moderator;
 
 -- A future lookup endpoint can expose this projection after activation.
 -- Identical visible prices collapse without revealing contribution counts.
