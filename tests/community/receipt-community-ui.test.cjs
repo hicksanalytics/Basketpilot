@@ -38,9 +38,9 @@ async function until(predicate, message) {
 }
 
 async function writeReceipt({ id = randomUUID(), owner_id = owner, retailer = 'sams',
-  store_id = store, purchase_date = '2024-10-01', subtotal = 20 } = {}) {
-  await db.query('insert into receipts (id, owner_id, retailer, store_id, purchase_date, subtotal) values ($1,$2,$3,$4,$5,$6)',
-    [id, owner_id, retailer, store_id, purchase_date, subtotal]);
+  store_id = store, purchase_date = '2024-10-01', subtotal = 20, created_at = null } = {}) {
+  await db.query('insert into receipts (id, owner_id, retailer, store_id, purchase_date, subtotal, created_at) values ($1,$2,$3,$4,$5,$6,coalesce($7,clock_timestamp()))',
+    [id, owner_id, retailer, store_id, purchase_date, subtotal, created_at]);
   return id;
 }
 
@@ -63,7 +63,7 @@ async function countObservations(id) {
   return rows[0].count;
 }
 
-function build(t, { sharing = true, signedIn = true } = {}) {
+function build(t, { sharing = true, signedIn = true, fixtureOwner = owner } = {}) {
   const dom = new JSDOM(read('public/receipts.html'), {
     url: 'https://basketpilot.test/receipts.html',
     runScripts: 'outside-only'
@@ -75,13 +75,14 @@ function build(t, { sharing = true, signedIn = true } = {}) {
   window.TextEncoder = TextEncoder;
   Object.defineProperty(window.crypto, 'subtle', { value: webcrypto.subtle });
 
-  let user = signedIn ? { id: owner, email: 'fixture@example.test' } : null;
-  const controls = { operations: [], lastSaved: null, loseShareResponse: false, beforeLines: null };
+  const fixtureUser = { id: fixtureOwner, email: 'fixture@example.test' };
+  let user = signedIn ? fixtureUser : null;
+  const controls = { operations: [], lastSaved: null, loseShareResponse: false, beforeLines: null, beforeHistory: null };
   const client = {
     auth: {
       async getUser() { return { data: { user } }; },
       async signOut() { user = null; return {}; },
-      async signInWithPassword() { user = { id: owner, email: 'fixture@example.test' }; return {}; },
+      async signInWithPassword() { user = fixtureUser; return {}; },
       onAuthStateChange() {}
     },
     from(table) {
@@ -106,12 +107,40 @@ function build(t, { sharing = true, signedIn = true } = {}) {
         select() {
           assert.equal(table, 'receipts');
           const userId = user?.id;
-          return { order: () => ({ limit: async () => {
-            const { rows } = await asUser(userId, tx => tx.query(
-              'select id, retailer, store_id, purchase_date::text, subtotal as total from receipts order by purchase_date desc'
-            ));
-            return { data: rows };
-          } }) };
+          const order = [];
+          let filterOwner, cursorTime, cursorId;
+          const query = {
+            eq(column, value) {
+              assert.equal(column, 'owner_id');
+              filterOwner = value;
+              return query;
+            },
+            order(column, options) {
+              assert.equal(options.ascending, false);
+              order.push(column);
+              return query;
+            },
+            or(filter) {
+              const match = /^created_at\.lt\.(.+),and\(created_at\.eq\.\1,id\.lt\.([a-f0-9-]+)\)$/.exec(filter);
+              assert.ok(match, filter);
+              [, cursorTime, cursorId] = match;
+              return query;
+            },
+            async limit(limit) {
+              assert.deepEqual(order, ['created_at', 'id']);
+              assert.equal(limit, 26);
+              const { rows } = await asUser(userId, tx => tx.query(
+                `select id, retailer, store_id, purchase_date::text, subtotal as total, created_at::text
+                 from receipts
+                 where owner_id = $1 and ($2::timestamptz is null or (created_at, id) < ($2, $3))
+                 order by created_at desc, id desc limit $4`,
+                [filterOwner, cursorTime ?? null, cursorId ?? null, limit]
+              ));
+              const error = await controls.beforeHistory?.(cursorTime);
+              return error ? { error } : { data: rows };
+            }
+          };
+          return query;
         }
       };
     }
@@ -364,4 +393,86 @@ test('an opt-in on receipt review appears in signed-out product search and a his
   assert.equal(sharedPrices.children.length, 0);
   assert.deepEqual((await db.query('select id from receipts where id = $1', [controls.lastSaved])).rows,
     [{ id: controls.lastSaved }]);
+});
+
+async function seedOlderHistory(fixtureOwner) {
+  const timestamp = '2024-12-01T12:00:00.123456+00:00';
+  const newest = await writeReceipt({ owner_id: fixtureOwner,
+    purchase_date: '2024-11-30', created_at: '2024-12-01T12:00:00.123457+00:00' });
+  for (let day = 1; day <= 25; day++) {
+    await writeReceipt({ owner_id: fixtureOwner, created_at: timestamp,
+      purchase_date: '2024-11-' + String(day).padStart(2, '0') });
+  }
+  const oldest = await writeReceipt({ owner_id: fixtureOwner, purchase_date: '2024-01-01',
+    created_at: '2024-02-01T12:00:00+00:00' });
+  await writeLine({ receipt_id: oldest });
+  return { newest, oldest };
+}
+
+test('an older shared receipt can be reached and withdrawn after a failed page request', async t => {
+  const fixtureOwner = randomUUID();
+  const { newest, oldest } = await seedOlderHistory(fixtureOwner);
+  await asUser(fixtureOwner, async tx => {
+    const { rows: [preview] } = await tx.query("select preview_token from receipt_community.set_consent($1,'status')", [oldest]);
+    await tx.query("select * from receipt_community.set_consent($1,'share',0,$2)", [oldest, preview.preview_token]);
+  });
+  await writeReceipt({ owner_id: randomUUID(), purchase_date: '2024-02-03' });
+
+  const { byId, controls, window } = build(t, { fixtureOwner });
+  const history = byId('cloud-history');
+  const more = byId('cloud-history-more');
+  await until(() => !more.hidden && !more.disabled, 'First page should offer older receipts');
+  assert.equal(history.children.length, 25);
+  assert.doesNotMatch(history.textContent, /2024-01-01|2024-02-03/);
+
+  controls.beforeHistory = cursor => cursor && new Error('Synthetic request failure');
+  more.click();
+  await until(() => !more.disabled, 'Failed load should be retryable');
+  assert.match(byId('cloud-history-status').textContent, /Could not load older receipts/);
+  assert.equal(history.children.length, 25);
+
+  // Changes to a newer page must not shift the older-page boundary.
+  await db.query('delete from receipts where id = $1', [newest]);
+  await writeReceipt({ owner_id: fixtureOwner, purchase_date: '2024-12-02' });
+  controls.beforeHistory = null;
+  more.click();
+  await until(() => more.hidden && !more.disabled, 'Last page should finish loading');
+  const titles = Array.from(history.children, row => row.querySelector('strong').textContent);
+  assert.equal(titles.length, 27);
+  assert.equal(new Set(titles).size, 27);
+  assert.doesNotMatch(history.textContent, /2024-02-03|2024-12-02/);
+  assert.equal(window.document.activeElement.textContent, titles[25]);
+
+  const panel = panelIn(history.lastElementChild);
+  assert.match(history.lastElementChild.textContent, /2024-01-01/);
+  panel.querySelector('summary').click();
+  (await action(panel, 'Withdraw shared prices')).click();
+  await action(panel, 'Check eligible prices');
+  assert.equal(await countObservations(oldest), 0);
+  assert.equal((await db.query('select id from receipts where id = $1', [oldest])).rows.length, 1);
+});
+
+test('signing out discards a pending older page and clears the history controls', async t => {
+  const fixtureOwner = randomUUID();
+  await seedOlderHistory(fixtureOwner);
+  const { byId, controls } = build(t, { fixtureOwner });
+  const more = byId('cloud-history-more');
+  await until(() => !more.hidden && !more.disabled, 'First page should offer older receipts');
+  const pending = Promise.withResolvers();
+  let fetchingOlder = false;
+  controls.beforeHistory = cursor => {
+    if (!cursor) return null;
+    fetchingOlder = true;
+    return pending.promise;
+  };
+  more.click();
+  await until(() => fetchingOlder, 'Older page should be in flight');
+  byId('auth-logout').click();
+  await until(() => !byId('cloud-auth').classList.contains('hidden'), 'Sign-out should complete');
+  pending.resolve();
+  await sleep(20);
+  assert.equal(byId('cloud-history').children.length, 0);
+  assert.equal(byId('cloud-history-status').textContent, '');
+  assert.equal(more.hidden, true);
+  assert.equal(more.ownerDocument.defaultView.getComputedStyle(more).display, 'none');
 });

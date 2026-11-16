@@ -6,7 +6,7 @@ const sb=createClient(projectUrl,publishableKey,{auth:{persistSession:true,autoR
 // The isolated test build injects its synthetic transport here.
 const receiptCommunity = null;
 const $=id=>document.getElementById(id);
-const state={user:null,busy:false,receipts:[],imageURL:null,pendingSave:false};
+const state={user:null,busy:false,imageURL:null,pendingSave:false};
 const storeNames={sams:"Sam's Club",costco:'Costco',publix:'Publix',kroger:'Kroger'};
 const sanitizeText=(s,max=180)=>String(s??'').trim().slice(0,max);
 const number=n=>n==null||n===''?null:Number(Number(n).toFixed(2));
@@ -19,12 +19,12 @@ function visible(el,yes){el.classList.toggle('hidden',!yes);}
 function input(){return {email:$('auth-email').value.trim().toLowerCase(),password:$('auth-password').value};}
 function readableError(error){const raw=error?.message||String(error||'Unknown error');if(/email address not authorized/i.test(raw))return 'Supabase’s free email service currently accepts only project team email addresses. Use the email on your Supabase team.';return raw;}
 function clearReviewCommunity(){const host=$('review-community');host.replaceChildren();host.hidden=true;}
-async function currentUser(){const {data,error}=await sb.auth.getUser();const nextUser=error?null:data?.user||null;if(state.user?.id!==nextUser?.id){clearReviewCommunity();$('cloud-history').replaceChildren();}state.user=nextUser;return state.user;}
-async function refreshAuth(){await currentUser();visible($('cloud-auth'),!state.user);visible($('cloud-signed-in'),!!state.user);$('auth-who').textContent=state.user?.email||'Signed in';$('cloud-save').disabled=!state.user||state.busy;if(state.user)await loadHistory();else $('cloud-history').replaceChildren();}
+async function currentUser(){const {data,error}=await sb.auth.getUser();const nextUser=error?null:data?.user||null;if(state.user?.id!==nextUser?.id){clearReviewCommunity();resetHistory();}state.user=nextUser;return state.user;}
+async function refreshAuth(){await currentUser();visible($('cloud-auth'),!state.user);visible($('cloud-signed-in'),!!state.user);$('auth-who').textContent=state.user?.email||'Signed in';$('cloud-save').disabled=!state.user||state.busy;if(state.user)await loadHistory();else resetHistory();}
 async function register(){const {email,password}=input();if(!email||password.length<10){authStatus('Enter your email and a password of at least 10 characters.');return;}busy(true);authStatus('Creating your account…');
  try{const {data,error}=await sb.auth.signUp({email,password,options:{emailRedirectTo:location.origin+'/receipts.html'}});if(error)throw error;authStatus(data?.session?'Account created. Signed in.':'Check your email to confirm, then return here and sign in. If the confirmation opens a default localhost page, return here manually.');await refreshAuth();if(state.pendingSave&&state.user){state.pendingSave=false;await save();}}catch(err){authStatus(readableError(err));}finally{busy(false);}}
 async function login(){const {email,password}=input();if(!email||!password){authStatus('Enter email and password.');return;}busy(true);authStatus('Signing in…');try{const {error}=await sb.auth.signInWithPassword({email,password});if(error)throw error;authStatus('Signed in.');await refreshAuth();if(state.pendingSave&&state.user){state.pendingSave=false;await save();}}catch(err){authStatus(readableError(err));}finally{busy(false);}}
-async function logout(){const {error}=await sb.auth.signOut();if(error){authStatus(readableError(error));return;}state.user=null;state.receipts=[];clearReviewCommunity();status('Signed out. Your saved receipts remain private in Supabase.');await refreshAuth();}
+async function logout(){const {error}=await sb.auth.signOut();if(error){authStatus(readableError(error));return;}state.user=null;clearReviewCommunity();resetHistory();status('Signed out. Your saved receipts remain private in Supabase.');await refreshAuth();}
 function snapshot(){return window.BasketPilotReceiptBridge?.getPayload?.()||null;}
 function validatedSnapshot(){const info=snapshot();if(!info?.valid||!info.parsed||!info.retailer||!info.purchaseDate)throw Error('Scan or paste your receipt and correct any missing retailer, date, quantity or price.');
  if(info.isSample)throw Error('The fictional sample cannot be saved to your real purchase history. Upload a receipt or paste actual receipt text.');
@@ -79,10 +79,68 @@ function receiptCard(r){const box=document.createElement('div');box.className='c
  details.appendChild(ul);box.appendChild(details);const controls=document.createElement('div');controls.className='buttons';
  if(r.photo_path){const photo=document.createElement('button');photo.type='button';photo.className='button secondary';photo.textContent='View private image';photo.addEventListener('click',()=>viewPhoto(r));controls.appendChild(photo);}
  const del=document.createElement('button');del.type='button';del.className='button ghost';del.textContent='Delete receipt';del.addEventListener('click',()=>deleteReceipt(r));controls.appendChild(del);box.appendChild(controls);receiptCommunity?.mount(box,r.id);return box;}
-let historyRequest=0;
-async function loadHistory(){if(!state.user)return;const owner=state.user.id,request=++historyRequest;const list=$('cloud-history');list.replaceChildren();const {data,error}=await sb.from('receipts').select('id,retailer,store_id,purchase_date,total,photo_path,created_at,receipt_items(retailer_item_code,receipt_description,quantity,gross_line_total,match_status,matched_product_id,matched_title),receipt_discounts(label,amount)').order('created_at',{ascending:false}).limit(25);
- if(state.user?.id!==owner||request!==historyRequest)return;
- if(error){appendText(list,'p','Cannot load receipts: '+error.message,'muted');return;}state.receipts=data||[];if(!state.receipts.length){appendText(list,'p','No saved receipts. Review a scan and choose Save privately.','muted');return;}for(const row of state.receipts)list.appendChild(receiptCard(row));}
+const historyPageSize = 25;
+let historyRequest = 0;
+let nextHistoryPage = null;
+
+function resetHistory() {
+  historyRequest++;
+  nextHistoryPage = null;
+  $('cloud-history').replaceChildren();
+  $('cloud-history-status').textContent = '';
+  $('cloud-history-more').hidden = true;
+  $('cloud-history-more').disabled = false;
+}
+
+async function loadHistory(older = false) {
+  const owner = state.user?.id;
+  const more = $('cloud-history-more');
+  if (!owner || (older && (!nextHistoryPage || more.disabled))) return;
+  if (!older) resetHistory();
+  const request = ++historyRequest;
+  const list = $('cloud-history');
+  const message = $('cloud-history-status');
+  more.disabled = true;
+  message.textContent = older ? 'Loading older receipts…' : 'Loading saved receipts…';
+
+  try {
+    const query = sb.from('receipts')
+      .select('id,retailer,store_id,purchase_date,total,photo_path,created_at,receipt_items(retailer_item_code,receipt_description,quantity,gross_line_total,match_status,matched_product_id,matched_title),receipt_discounts(label,amount)')
+      .eq('owner_id', owner)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false });
+    if (older) {
+      // Keep the database timestamp precision and break ties by receipt ID.
+      const { created_at, id } = nextHistoryPage;
+      query.or('created_at.lt.' + created_at + ',and(created_at.eq.' + created_at + ',id.lt.' + id + ')');
+    }
+    const { data, error } = await query.limit(historyPageSize + 1);
+    if (state.user?.id !== owner || request !== historyRequest) return;
+    if (error) throw error;
+
+    const page = data.slice(0, historyPageSize);
+    nextHistoryPage = data.length > historyPageSize ? page.at(-1) : null;
+    more.hidden = !nextHistoryPage;
+    if (!older && !page.length) {
+      message.textContent = 'No saved receipts. Review a scan and choose Save privately.';
+      return;
+    }
+    const cards = page.map(receiptCard);
+    list.append(...cards);
+    message.textContent = older ? (cards.length ? cards.length + ' older receipts loaded.' : 'You’ve reached the end of your history.') : '';
+    if (older && cards.length) {
+      const firstTitle = cards[0].querySelector('strong');
+      firstTitle.tabIndex = -1;
+      firstTitle.focus();
+    }
+  } catch {
+    if (request === historyRequest) message.textContent = older
+      ? 'Could not load older receipts. Try again.'
+      : 'Could not load saved receipts. Refresh your history to try again.';
+  } finally {
+    if (request === historyRequest) more.disabled = false;
+  }
+}
 async function viewPhoto(r){if(state.imageURL){URL.revokeObjectURL(state.imageURL);state.imageURL=null;}const {data,error}=await sb.storage.from('basketpilot-receipt-images').download(r.photo_path);if(error){status('Could not load image: '+readableError(error));return;}state.imageURL=URL.createObjectURL(data);const img=$('cloud-photo-preview');img.src=state.imageURL;visible(img,true);img.scrollIntoView({behavior:'smooth',block:'nearest'});}
 async function deleteReceipt(r){if(!window.confirm('Permanently delete this saved receipt, its items and the optional photo?'))return;busy(true);try{if(r.photo_path){const remove=await sb.storage.from('basketpilot-receipt-images').remove([r.photo_path]);if(remove.error)throw remove.error;}const result=await sb.from('receipts').delete().eq('id',r.id);if(result.error)throw result.error;clearReviewCommunity();status('Receipt deleted.');if(state.imageURL){URL.revokeObjectURL(state.imageURL);state.imageURL=null;}visible($('cloud-photo-preview'),false);await loadHistory();}catch(err){status('Delete failed: '+readableError(err));}finally{busy(false);}}
 async function saveOrPrompt(){
@@ -98,7 +156,8 @@ async function saveOrPrompt(){
 }
 window.BasketPilotCloud=Object.freeze({saveOrPrompt,refreshHistory:loadHistory});
 $('auth-register').addEventListener('click',register);$('auth-login').addEventListener('click',login);$('auth-logout').addEventListener('click',logout);
-$('cloud-save').addEventListener('click',save);$('cloud-refresh').addEventListener('click',loadHistory);
+$('cloud-save').addEventListener('click',save);$('cloud-refresh').addEventListener('click',()=>loadHistory());
+$('cloud-history-more').addEventListener('click',()=>loadHistory(true));
 $('auth-password').addEventListener('keydown',e=>{if(e.key==='Enter')login();});
-sb.auth.onAuthStateChange(event=>{if(['SIGNED_IN','SIGNED_OUT','TOKEN_REFRESHED'].includes(event))setTimeout(()=>refreshAuth(),0);});
+sb.auth.onAuthStateChange((event,session)=>{if(event==='SIGNED_OUT'||(event==='SIGNED_IN'&&session?.user?.id!==state.user?.id))setTimeout(()=>refreshAuth(),0);});
 refreshAuth().catch(e=>authStatus('Cloud unavailable: '+readableError(e)));

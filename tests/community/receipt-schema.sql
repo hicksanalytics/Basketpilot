@@ -13,6 +13,7 @@ create table public.receipts (
   store_id text,
   purchase_date date,
   subtotal numeric,
+  created_at timestamptz not null default clock_timestamp(),
   contribution_opt_in boolean not null default false
 );
 
