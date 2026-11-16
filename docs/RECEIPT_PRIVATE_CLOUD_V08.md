@@ -7,6 +7,7 @@ Status: Development beta. The public Render site is the app; customer receipts a
 - Parse Sam's internal 10-digit item codes as **strings**, preserving leading zeroes.
 - Read a six- or seven-digit Costco item number following a separated `E` in a Costco receipt.
 - Prefill the Costco warehouse number from an explicit location header or `Whse:` register footer. Keep the field editable. A conflict leaves it blank, and selecting a different retailer clears the previous number.
+- Recognize a Costco item number after a printed quantity and unit price when the quantity times unit price equals the line total. An inconsistent amount stays available for manual review.
 - Recognize Sam's `INST SV` negative tax-flagged discount lines and multiple tax lines.
 - Require the user to review receipt lines, date and retailer before private saving.
 - Keep BOGO/instant-savings separate; do not assume a discounted receipt price is a public shelf price.
@@ -51,6 +52,8 @@ Published warehouse receipts show the location-name-and-number header and the re
 
 ## To validate
 Use a real photographed receipt in the hosted app; browser OCR accuracy cannot be determined from synthetic text tests. Sign in with a project-team email, confirm review, and press `Save reviewed receipt privately`. Check the new record in `My saved receipts`. Optional original image storage is off by default. Delete test receipts in the UI when finished.
+
+Run `python3 tests/receipt_ocr_fixture.py` for a local OCR check with Python Pillow, Tesseract CLI and its English model, and Node installed. The script generates a fictional receipt at zero and one degree of rotation and checks warehouse, item ID, quantity, and price. Use `--font` to supply a local DejaVu Sans Mono font path. Native iPhone and Android camera checks remain separate.
 
 ## Free-tier controls
 - No new Scavio calls.

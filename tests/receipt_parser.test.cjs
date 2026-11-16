@@ -33,6 +33,19 @@ test('Costco warehouse extraction leaves address-only and unrelated receipt numb
    "SAM'S CLUB"+rows+'Whse:386'
  ]) assert.equal(p.parseReceipt(text).storeId,'');
 });
+test('Costco inline quantity keeps the exact item number when the printed prices reconcile',()=>{
+ const r=p.parseReceipt('COSTCO\n2 @ 4.25 E 782796 WATER 8.50 A\n3 @ $9.50 1068080 ORGANIC EGGS 28.50\nSUBTOTAL 37.00');
+ assert.deepEqual(r.items.map(({sku,description,quantity,lineTotal,unitPrice})=>[sku,description,quantity,lineTotal,unitPrice]),[
+  ['782796','WATER',2,8.50,4.25],['1068080','ORGANIC EGGS',3,28.50,9.50]
+ ]);
+ assert.equal(r.subtotalDelta,0);
+});
+test('Costco inline quantity leaves an ambiguous amount or item code for review',()=>{
+ const r=p.parseReceipt('COSTCO\n2 @ 4.25 E 782796 WATER 7.50 A\n2 @ 4.25 WATER 8.50\nSUBTOTAL 16.00');
+ assert.deepEqual(r.items.map(({sku,lineTotal})=>[sku,lineTotal]),[['',7.50],['',8.50]]);
+ assert.equal(r.subtotalDelta,0);
+ assert.equal(p.parseReceipt("SAM'S CLUB\n2 @ 4.25 E 782796 WATER 8.50").items[0].sku,'');
+});
 test('Publix BOGO is kept separate, not assigned as an everyday price',()=>{
  const r=p.parseReceipt('PUBLIX\nRAOS MARINARA 8.99\nRAOS MARINARA 8.99\nBOGO SAVINGS -8.99\nSUBTOTAL 8.99\nTOTAL 9.70');
  assert.equal(r.items.length,2);assert.equal(r.discounts.length,1);assert.equal(r.computedNet,8.99);assert.equal(r.subtotalDelta,0);

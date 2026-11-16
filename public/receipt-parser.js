@@ -93,12 +93,18 @@
     let label=cleanLine(m[1]);
     if(!label||label.length<3||controlRE.test(label))return null;
     const isDiscount=discountRE.test(label)||amount<0;
+    // Costco can print the quantity and unit price before the item number.
+    const prefix = retailer === 'costco' && label.match(/^(\d{1,4})\s*@\s*\$?(\d{1,5}\.\d{2})\s+(.+)$/);
+    const printedQuantity = prefix ? Number(prefix[1]) : 0;
+    const inlineQuantity = printedQuantity > 0 && printedQuantity <= 1000
+      && printedQuantity * Math.round(Number(prefix[2]) * 100) === Math.round(Math.abs(amount) * 100);
+    const itemLabel = inlineQuantity ? prefix[3] : label;
     let sku='';
-    const skuMatch=label.match(/^(\d{4,14})\s+(.+)$/)
-      || (retailer === 'costco' ? label.match(/^E\s+(\d{6,7})\s+(.+)$/i) : null);
+    const skuMatch=itemLabel.match(/^(\d{4,14})\s+(.+)$/)
+      || (retailer === 'costco' ? itemLabel.match(/^E\s+(\d{6,7})\s+(.+)$/i) : null);
     if(skuMatch){sku=skuMatch[1];label=cleanLine(skuMatch[2]);}
-    let qty=1;
-    const qtyMatch=label.match(/^(\d+(?:\.\d+)?)\s*[xX@]\s+(.+)$/);
+    let qty=skuMatch && inlineQuantity ? printedQuantity : 1;
+    const qtyMatch=!(skuMatch && inlineQuantity) && label.match(/^(\d+(?:\.\d+)?)\s*[xX@]\s+(.+)$/);
     if(qtyMatch){qty=Number(qtyMatch[1]);label=cleanLine(qtyMatch[2]);}
     if(!label||qty<=0||qty>1000||label.length<2)return null;
     if(/^[\d\W]+$/.test(label))return null;
