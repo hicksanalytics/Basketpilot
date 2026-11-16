@@ -294,7 +294,8 @@ test('history hides sharing for an ineligible receipt and reports stale consent 
   const ineligible = panelIn(cardOn('2024-11-03'));
   ineligible.querySelector('summary').click();
   await until(() => ineligible.textContent.includes('No item prices qualify'), 'Ineligible receipt should explain sharing is unavailable');
-  assert.match(ineligible.textContent, /exact package match, a known store/);
+  assert.match(ineligible.textContent, /has not verified this store or club number/);
+  assert.doesNotMatch(ineligible.textContent, /needs an exact package match/);
   assert.ok(ineligible.querySelector('button').classList.contains('hidden'));
 
   const eligible = panelIn(cardOn('2024-11-02'));
@@ -309,6 +310,44 @@ test('history hides sharing for an ineligible receipt and reports stale consent 
   assert.match(eligible.textContent, /Sharing changed elsewhere/);
   assert.equal(await countObservations(eligibleId), 1);
   assert.deepEqual(controls.operations.filter(op => op.id === eligibleId).map(op => op.action), ['status', 'share']);
+});
+
+test('history explains a missing store, discounts and skipped lines without exposing private line text', async t => {
+  const fixtureOwner = randomUUID();
+  const missingStore = await writeReceipt({ owner_id: fixtureOwner, purchase_date: '2024-08-01', store_id: null });
+  await writeLine({ receipt_id: missingStore });
+  const discounted = await writeReceipt({ owner_id: fixtureOwner, purchase_date: '2024-08-02' });
+  await writeLine({ receipt_id: discounted });
+  await db.query('insert into receipt_discounts values ($1, $2)', [randomUUID(), discounted]);
+  const partial = await writeReceipt({ owner_id: fixtureOwner, purchase_date: '2024-08-03', subtotal: 25 });
+  await writeLine({ receipt_id: partial });
+  await writeLine({ receipt_id: partial, retailer_item_code: null, quantity: 1, gross_line_total: 5,
+    receipt_description: 'PRIVATE UNMATCHED LABEL' });
+  const { byId } = build(t, { fixtureOwner });
+  const history = byId('cloud-history');
+  await until(() => history.children.length === 3, 'Fixture history should load');
+  const openOn = date => {
+    const card = [...history.children].find(child => child.textContent.includes(date));
+    const panel = panelIn(card);
+    panel.querySelector('summary').click();
+    return panel;
+  };
+  for (const [day, text] of [['01', 'needs a store or club number'], ['02', 'Prices on discounted receipts are currently skipped']]) {
+    const panel = openOn('2024-08-' + day);
+    await until(() => panel.textContent.includes(text), 'Receipt should show its blocking check');
+    assert.ok(panel.querySelector('button').classList.contains('hidden'));
+  }
+  const panel = openOn('2024-08-03');
+  const share = await action(panel, 'Share 1 item price');
+  assert.match(panel.textContent, /1 item price needs an exact package match/);
+  assert.doesNotMatch(panel.textContent, /PRIVATE UNMATCHED LABEL/);
+  assert.equal(await countObservations(partial), 0);
+  share.click();
+  await action(panel, 'Withdraw shared prices');
+  assert.equal(await countObservations(partial), 1);
+  assert.ok(panel.querySelector('[aria-label="Why prices were skipped"]').hidden);
+  assert.equal(await countObservations(missingStore), 0);
+  assert.equal(await countObservations(discounted), 0);
 });
 
 test('history shows a changed preview and requires a new tap before publishing', async t => {

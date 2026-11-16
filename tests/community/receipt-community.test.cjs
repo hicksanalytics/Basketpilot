@@ -157,7 +157,7 @@ test('another account, missing identity, and anonymous role cannot use receipt c
 test('owner has no direct access to the observation or allowlist tables', async () => {
   for (const statement of [
     'select * from receipt_community.observations',
-    'select * from receipt_community.eligible_lines',
+    'select * from receipt_community.checked_lines',
     "select * from receipt_community.package_price_history('fixture', '0000000421')",
     "select * from receipt_community.search_package_prices('Synthetic')",
     'delete from receipt_community.observations',
@@ -171,22 +171,23 @@ test('owner has no direct access to the observation or allowlist tables', async 
 
 test('unverified locations, unreconciled subtotals, discounts, and invalid dates prevent sharing', async () => {
   const cases = [
-    [4, { store: '9999' }],
-    [5, { store: null }],
-    [6, { subtotal: 21 }],
-    [7, {}],
-    [8, { date: null }],
-    [9, { date: '2200-01-01' }],
-    [10, { retailer: 'other_fixture' }],
-    [13, { date: '-infinity' }]
+    [4, { store: '9999' }, 'store_unverified'],
+    [5, { store: null }, 'store_missing'],
+    [6, { subtotal: 21 }, 'subtotal'],
+    [7, {}, 'discounts'],
+    [8, { date: null }, 'date_invalid'],
+    [9, { date: '2200-01-01' }, 'date_invalid'],
+    [10, { retailer: 'other_fixture' }, 'package_unverified'],
+    [13, { date: '-infinity' }, 'date_invalid']
   ];
-  for (const [id, options] of cases) {
+  for (const [id, options, reason] of cases) {
     await addReceipt(id, options);
     await addItem(id, id * 10 + 1);
     if (id === 7) {
       await db.query('insert into public.receipt_discounts values ($1, $2)', [itemId(72), receiptId(id)]);
       await db.query('update public.receipts set contribution_opt_in = true where id = $1', [receiptId(id)]);
     }
+    assert.deepEqual((await requestConsent(id, 'status', null, null)).exclusion_counts, { [reason]: 1 });
     assert.deepEqual(await consent(id, 'status'), result('status', 0, 0, 0));
     assert.deepEqual(await consent(id, 'share', 0), result('ineligible', 1, 0));
     assert.deepEqual(await consent(id, 'share', 0), result('stale', 1, 0, 0));
@@ -210,6 +211,8 @@ test('only reviewed, exact package matches with a whole-package cent price are s
       matched_title = 'Synthetic package, 24 ct', package_gtin = '00012345678905' where id = $1
   `, [itemId(112)]);
   assert.deepEqual(await consent(11, 'status'), result('status', 0, 0, 2));
+  const preview = await requestConsent(11, 'status', null, null);
+  assert.deepEqual(preview.exclusion_counts, { package_unverified: 2, review: 1, package_price: 4 });
   assert.deepEqual(await observations(11), []);
   assert.deepEqual(await consent(11, 'share', 0), result('shared', 1, 2));
   assert.deepEqual((await observations(11)).map(row => row.receipt_item_id), [itemId(111), itemId(119)]);

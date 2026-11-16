@@ -2,6 +2,19 @@
 export function createReceiptCommunity(request) {
   const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
   const date = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' });
+  const receiptReasons = {
+    store_missing: 'The receipt needs a store or club number.',
+    store_unverified: 'BasketPilot has not verified this store or club number. Check it against the receipt.',
+    date_invalid: 'The receipt needs a valid purchase date.',
+    discounts: 'This receipt has discounts. Prices on discounted receipts are currently skipped.',
+    no_items: 'This receipt has no saved item lines.',
+    subtotal: 'The saved item prices need to add up to the receipt subtotal.'
+  };
+  const lineReasons = {
+    review: 'receipt review.',
+    package_unverified: 'an exact package match.',
+    package_price: 'a positive whole-cent price per package.'
+  };
 
   function mount(parent, receiptId, { expanded = false } = {}) {
     const doc = parent.ownerDocument;
@@ -19,12 +32,15 @@ export function createReceiptCommunity(request) {
 
     const prices = doc.createElement('ul');
     prices.setAttribute('aria-label', 'Item prices in this sharing preview');
+    const exclusions = doc.createElement('ul');
+    exclusions.setAttribute('aria-label', 'Why prices were skipped');
+    exclusions.hidden = true;
 
     const button = doc.createElement('button');
     button.type = 'button';
     button.className = 'button secondary';
     button.classList.add('hidden');
-    panel.append(summary, description, status, prices, button);
+    panel.append(summary, description, status, prices, exclusions, button);
     parent.append(panel);
 
     let state = null;
@@ -50,11 +66,29 @@ export function createReceiptCommunity(request) {
       prices.hidden = rows.length === 0;
     }
 
+    function renderExclusions(counts) {
+      exclusions.replaceChildren();
+      const add = text => {
+        const row = doc.createElement('li');
+        row.textContent = text;
+        exclusions.append(row);
+      };
+      for (const [reason, message] of Object.entries(receiptReasons)) {
+        if (counts[reason]) add(message);
+      }
+      for (const [reason, message] of Object.entries(lineReasons)) {
+        const count = counts[reason];
+        if (count) add(label(count) + (count === 1 ? ' needs ' : ' need ') + message);
+      }
+      exclusions.hidden = !exclusions.childElementCount;
+    }
+
     function render(data, action) {
       state = data;
       const shared = data.observation_count > 0;
       const canShare = !shared && data.eligible_count > 0 && data.preview_token;
       renderPrices(data.price_rows, shared);
+      renderExclusions(shared ? {} : data.exclusion_counts ?? {});
       button.classList.toggle('hidden', !shared && !canShare);
       button.textContent = shared ? 'Withdraw shared prices' : canShare ? 'Share ' + label(data.eligible_count) : '';
       if (data.outcome === 'stale') {
@@ -74,7 +108,7 @@ export function createReceiptCommunity(request) {
       } else {
         status.textContent = canShare
           ? label(data.eligible_count) + ' can be shared.'
-          : 'No item prices qualify for sharing. Eligible lines need an exact package match, a known store, and a receipt subtotal that adds up without discounts.';
+          : 'No item prices qualify for sharing. Your receipt stays private.';
       }
     }
 
@@ -93,6 +127,7 @@ export function createReceiptCommunity(request) {
         if (!panel.isConnected) return;
         state = null;
         renderPrices([], false);
+        renderExclusions({});
         button.textContent = 'Check sharing status';
         button.classList.remove('hidden');
         status.textContent = 'Could not confirm sharing status. Check again before taking another action.';

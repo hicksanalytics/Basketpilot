@@ -53,35 +53,52 @@ alter table receipt_community.observations enable row level security;
 
 revoke all on all tables in schema receipt_community from public, anon, authenticated;
 
--- Keep the preview and insert on the same eligibility rules. This view is
--- internal to the draft; it exposes source IDs to neither browser role.
-create view receipt_community.eligible_lines as
-select i.id as receipt_item_id, r.id as receipt_id, s.retailer, s.store_id,
-  p.receipt_item_code, r.purchase_date,
-  (i.gross_line_total * 100 / nullif(i.quantity, 0))::integer as package_price_cents
-from public.receipts r
-join public.receipt_items i on i.receipt_id = r.id
-join receipt_community.verified_packages p
-  on p.retailer = r.retailer and p.receipt_item_code = i.retailer_item_code
-join receipt_community.verified_stores s
-  on s.retailer = r.retailer and s.store_id = r.store_id
-where i.user_reviewed
-  and i.quantity between 1 and 1000 and i.quantity = trunc(i.quantity)
-  and i.gross_line_total between 0.01 and 20000
-  and mod(i.gross_line_total * 100, nullif(i.quantity, 0)) = 0
-  and isfinite(r.purchase_date)
-  and r.purchase_date <= current_date
-  and r.subtotal > 0
-  and r.subtotal = (
-    select sum(all_items.gross_line_total)
-    from public.receipt_items all_items
-    where all_items.receipt_id = r.id
-  )
-  and not exists (
-    select 1 from public.receipt_discounts d where d.receipt_id = r.id
-  );
+-- The same checks drive the preview, exclusions, and inserts. Receipt-wide
+-- checks take precedence over line checks. Source IDs stay internal.
+create view receipt_community.checked_lines as
+with receipts_checked as (
+  select r.id, r.retailer, r.store_id, r.purchase_date,
+    case
+      when nullif(btrim(r.store_id), '') is null then 'store_missing'
+      when s.store_id is null then 'store_unverified'
+      when (isfinite(r.purchase_date) and r.purchase_date <= current_date) is not true then 'date_invalid'
+      when exists (select 1 from public.receipt_discounts d where d.receipt_id = r.id) then 'discounts'
+      when totals.item_count = 0 then 'no_items'
+      when (r.subtotal > 0 and r.subtotal = totals.gross_total) is not true then 'subtotal'
+    end as receipt_reason
+  from public.receipts r
+  left join receipt_community.verified_stores s
+    on s.retailer = r.retailer and s.store_id = r.store_id
+  cross join lateral (
+    select count(*) as item_count, sum(i.gross_line_total) as gross_total
+    from public.receipt_items i
+    where i.receipt_id = r.id
+  ) totals
+), lines_checked as (
+  select i.id as receipt_item_id, r.id as receipt_id, r.retailer, r.store_id,
+    p.receipt_item_code, r.purchase_date, i.gross_line_total, i.quantity,
+    coalesce(r.receipt_reason, case
+      when i.user_reviewed is not true then 'review'
+      when p.receipt_item_code is null then 'package_unverified'
+      when (
+        i.quantity between 1 and 1000 and i.quantity = trunc(i.quantity)
+        and i.gross_line_total between 0.01 and 20000
+        and mod(i.gross_line_total * 100, nullif(i.quantity, 0)) = 0
+      ) is not true then 'package_price'
+    end) as exclusion_reason
+  from receipts_checked r
+  left join public.receipt_items i on i.receipt_id = r.id
+  left join receipt_community.verified_packages p
+    on p.retailer = r.retailer and p.receipt_item_code = i.retailer_item_code
+)
+select receipt_item_id, receipt_id, retailer, store_id, receipt_item_code,
+  purchase_date, exclusion_reason,
+  case when exclusion_reason is null then
+    (gross_line_total * 100 / quantity)::integer
+  end as package_price_cents
+from lines_checked;
 
-revoke all on receipt_community.eligible_lines from public, anon, authenticated;
+revoke all on receipt_community.checked_lines from public, anon, authenticated;
 
 -- The revision is per receipt. A delayed share request cannot undo a later withdrawal.
 -- The receipt lock serializes consent changes and a concurrent receipt deletion.
@@ -93,7 +110,7 @@ create function receipt_community.set_consent(
 )
 returns table (
   outcome text, revision integer, observation_count integer, eligible_count integer,
-  price_rows jsonb, preview_token text
+  price_rows jsonb, preview_token text, exclusion_counts jsonb
 )
 language plpgsql
 security definer
@@ -105,7 +122,8 @@ declare
   v_count integer;
   v_eligible_count integer;
   v_outcome text;
-  v_eligible receipt_community.eligible_lines[];
+  v_eligible receipt_community.checked_lines[];
+  v_exclusions jsonb := '{}'::jsonb;
   v_price_rows jsonb := '[]'::jsonb;
   v_preview_token text;
 begin
@@ -133,10 +151,19 @@ begin
   where o.receipt_id = p_receipt_id;
 
   if p_action <> 'withdraw' or p_expected_revision <> v_revision then
-    -- Use the same captured eligible lines for the quote and the eventual insert.
-    select array_agg(e), count(*)::integer into v_eligible, v_eligible_count
-    from receipt_community.eligible_lines e
-    where e.receipt_id = p_receipt_id;
+    -- Capture eligible lines and exclusions together for a consistent preview.
+    with checks as materialized (
+      select l as line, l.exclusion_reason
+      from receipt_community.checked_lines l
+      where l.receipt_id = p_receipt_id
+    )
+    select
+      (select array_agg(c.line) from checks c where c.exclusion_reason is null),
+      (select coalesce(jsonb_object_agg(reasons.exclusion_reason, reasons.line_count), '{}'::jsonb)
+        from (select c.exclusion_reason, count(*) as line_count
+          from checks c where c.exclusion_reason is not null group by c.exclusion_reason) reasons)
+    into v_eligible, v_exclusions;
+    v_eligible_count := coalesce(cardinality(v_eligible), 0);
 
     with displayed as (
       select e.retailer, e.store_id, e.receipt_item_code, e.purchase_date, e.package_price_cents
@@ -166,18 +193,18 @@ begin
 
   if p_action = 'status' or p_expected_revision <> v_revision then
     v_outcome := case when p_action = 'status' then 'status' else 'stale' end;
-    return query select v_outcome, v_revision, v_count, v_eligible_count, v_price_rows, v_preview_token;
+    return query select v_outcome, v_revision, v_count, v_eligible_count, v_price_rows, v_preview_token, v_exclusions;
     return;
   end if;
 
   if p_action = 'share' then
     if v_count > 0 then
-      return query select 'shared', v_revision, v_count, null::integer, v_price_rows, null::text;
+      return query select 'shared', v_revision, v_count, null::integer, v_price_rows, null::text, '{}'::jsonb;
       return;
     end if;
 
     if p_preview_token is distinct from v_preview_token then
-      return query select 'preview_changed', v_revision, v_count, v_eligible_count, v_price_rows, v_preview_token;
+      return query select 'preview_changed', v_revision, v_count, v_eligible_count, v_price_rows, v_preview_token, v_exclusions;
       return;
     end if;
 
@@ -205,7 +232,7 @@ begin
   values (p_receipt_id, v_revision)
   on conflict (receipt_id) do update set revision = excluded.revision;
 
-  return query select v_outcome, v_revision, v_count, null::integer, v_price_rows, null::text;
+  return query select v_outcome, v_revision, v_count, null::integer, v_price_rows, null::text, v_exclusions;
 end;
 $function$;
 
