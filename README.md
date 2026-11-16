@@ -35,6 +35,27 @@ node --test tests/*.cjs
 
 The suite covers receipt parsing, count normalization, purchase history, barcode checksums, and exact-package matching across retailers.
 
+## Community receipt draft
+
+The SQL in `supabase/drafts/receipt_community.sql` runs against a synthetic PostgreSQL fixture. It stores one historical package-price observation per eligible receipt line after explicit owner consent. Withdrawing or deleting the receipt removes its observations. A consent revision prevents a delayed retry from undoing withdrawal.
+
+Eligibility requires a reviewed line, an exact retailer item code and store ID in independently curated lists, and a reconciled subtotal. Receipts with discounts are excluded until their impact can be determined. A store ID match identifies the location recorded on the receipt. The receipt itself is shopper-supplied.
+
+The draft supports an internal hold for one receipt line when a price, package, or store attribution needs review. Both community search and package history omit held observations. Owners can still withdraw consent from private history. A hold survives withdrawal and prevents that line from being submitted again until review is complete. Clearing the hold restores a price only while consent still exists. Deleting the private line removes the hold and its observation.
+
+See [Middle Tennessee community catalog evidence](docs/community-catalog-evidence.md) for example store and item IDs, gaps in receipt-format evidence, and examples where the orderable package matters.
+
+```sh
+npm ci --prefix tests/community --ignore-scripts
+npm --prefix tests/community test
+```
+
+The tests run the receipt and product pages in a simulated browser DOM with a synthetic database transport. Receipt review offers sharing after private save, and previously saved receipts offer the same controls in history. The shopper sees each eligible package, location, purchase date, and price per package before opting in. The share request carries the preview token and consent revision. A change to the eligible prices refreshes the preview and requires another explicit opt-in. Find a Product searches the curated package name or independently verified barcode and puts dated shared prices in their own section. The published configuration keeps both controllers disabled. The draft has no hosted endpoint or live catalog seed.
+
+The fixture runs guest lookups under the `receipt_community_reader` database role. It can read the shared price projection and run the bounded search. Its view contains the retailer, verified package and location, purchase date, and price. A future backend can use a dedicated server connection with that role after approval.
+
+The guest fixture also runs requests through the draft `POST /api/community-prices/search` handler. It accepts a short product name or a normalized package GTIN in a JSON body and returns only the shared price fields. The browser request omits credentials and the response uses `Cache-Control: no-store`. The draft module stays outside the public site directory.
+
 ## Future work
 
 - Add explicit receipt-image privacy controls and straightforward account onboarding.
