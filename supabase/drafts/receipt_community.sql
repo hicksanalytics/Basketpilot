@@ -339,6 +339,25 @@ $function$;
 revoke all on function receipt_community.package_price_history(text, text)
   from public, anon, authenticated;
 
+-- Ignore commas used as catalog separators and repeated whitespace.
+-- Keep punctuation inside numbers so a package size retains its meaning.
+create function receipt_community.normalize_package_search_name(p_name text)
+returns text
+language sql
+immutable
+strict
+set search_path = ''
+as $function$
+  select btrim(regexp_replace(
+    regexp_replace(lower(p_name), ',(?![0-9])|(?<![0-9]),', ' ', 'g'),
+    '[[:space:]]+', ' ', 'g'
+  ))
+$function$;
+
+revoke all on function receipt_community.normalize_package_search_name(text)
+  from public, anon, authenticated;
+grant execute on function receipt_community.normalize_package_search_name(text) to receipt_community_reader;
+
 -- Search only the curated catalog. Private barcode links never seed this lookup.
 create function receipt_community.search_package_prices(
   p_name text default null,
@@ -352,13 +371,24 @@ language sql
 stable
 set search_path = ''
 as $function$
-  with matched as (
+  with search as (
+    select receipt_community.normalize_package_search_name(p_name) as name
+    where p_package_gtin is null and char_length(btrim(p_name)) between 2 and 120
+  ), matched as (
     select distinct p.retailer, p.receipt_item_code, p.package_name, p.package_gtin
     from receipt_community.lookup_price_rows p
     where (
       (p_name is null and p_package_gtin ~ '^[0-9]{14}$' and p.package_gtin = p_package_gtin)
-      or (p_package_gtin is null and char_length(btrim(p_name)) between 2 and 120
-        and strpos(lower(p.package_name), lower(btrim(p_name))) > 0)
+      or exists (
+        select 1 from search q
+        cross join lateral (select receipt_community.normalize_package_search_name(p.package_name) as name) n
+        where char_length(q.name) >= 2
+          and case when q.name ~ '[0-9]'
+            -- Match a whole phrase so 4 ct cannot match 24 ct.
+            then strpos(' ' || n.name || ' ', ' ' || q.name || ' ') > 0
+            else strpos(n.name, q.name) > 0
+          end
+      )
     )
     order by p.package_name, p.retailer, p.receipt_item_code
     limit 12

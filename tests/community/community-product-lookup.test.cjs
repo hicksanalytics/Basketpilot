@@ -99,6 +99,44 @@ test('a signed-out name search displays dated prices for distinct packages and o
   assert.match(byId('lookup-description').textContent, /Current retailer prices are unavailable/);
 });
 
+test('a typed package name finds the exact count without catalog punctuation', async t => {
+  const { byId, search } = build(t);
+  const community = byId('community-prices');
+  const status = byId('community-status');
+
+  search('Fixture   OATS 24 ct');
+  await until(() => community.querySelector('h3')?.textContent === 'Fixture Oats, 24 ct', 'The 24-count pack should appear');
+  assert.equal(community.querySelectorAll('article').length, 1);
+  assert.match(community.textContent, /Synthetic Franklin Club.*Purchased Nov 10, 2024.*\$19\.95 per package/);
+  assert.doesNotMatch(community.textContent, /12 ct|6 ct|48 ct/);
+
+  search('4 ct');
+  await until(() => status.textContent.includes('No shared receipt prices'), '4 ct must not match 24 ct');
+  assert.equal(community.children.length, 0);
+  search('Fixture Oat');
+  await until(() => community.querySelectorAll('article').length === 3, 'A partial unqualified name should still work');
+});
+
+test('name lookup preserves decimals and separators within a package quantity', async () => {
+  for (const [code, title] of [
+    ['010001', 'Synthetic Flour, 2.5 lb'],
+    ['010002', 'Synthetic Flour, 25 lb'],
+    ['010003', 'Synthetic Flour, 1,000 g'],
+    ['010004', 'Synthetic Flour, 12.5 lb']
+  ]) {
+    await db.query('insert into receipt_community.verified_packages values ($1,$2,$3,$4)',
+      ['sams', code, title, 'https://example.com/flour']);
+    await save({ retailer: 'sams', store: '0101', date: '2024-11-10', code, price: 5 });
+  }
+  for (const [name, expected] of [
+    ['synthetic flour 2.5 lb', ['010001']], ['25 lb', ['010002']],
+    ['1,000 g', ['010003']], ['000 g', []], ['5 lb', []], [', ,', []]
+  ]) {
+    const prices = await packagePrices({ name, packageGtin: null });
+    assert.deepEqual(prices.map(price => price.receipt_item_code), expected, name);
+  }
+});
+
 test('barcode search uses only the curated exact package barcode and keeps personal prices separate', async t => {
   const { byId, search } = build(t, { signedIn: true });
   await until(() => byId('account-status').textContent.includes('Latest 1'), 'Personal history should be ready');
