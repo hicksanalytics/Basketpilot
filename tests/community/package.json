@@ -1,11 +1,13 @@
 {
   "private": true,
   "scripts": {
-    "test": "node --test *.test.cjs"
+    "test": "node --test *.test.cjs",
+    "test:native-consent": "node --test native-consent.integration.cjs"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.16",
     "@supabase/supabase-js": "2.119.0",
-    "jsdom": "29.0.0"
+    "jsdom": "29.0.0",
+    "pg": "8.23.1"
   }
 }
