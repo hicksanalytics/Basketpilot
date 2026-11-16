@@ -1,12 +1,12 @@
-const searchPath = '/api/community-prices/search';
-const consentPath = '/api/receipt-community/consent';
+export const searchPath = '/api/community-prices/search';
+export const consentPath = '/api/receipt-community/consent';
 const uuidPattern = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const consentFields = ['outcome', 'revision', 'observation_count', 'eligible_count', 'preview_token'];
 const exclusionReasons = [
   'store_missing', 'store_unverified', 'date_invalid', 'discounts', 'no_items',
   'subtotal', 'review', 'package_unverified', 'package_price', 'on_hold'
 ];
-const maxBodyBytes = 1024;
+export const maxBodyBytes = 1024;
 const priceFields = [
   'retailer', 'receipt_item_code', 'package_name', 'package_gtin',
   'store_id', 'location_name', 'purchase_date', 'package_price_cents'

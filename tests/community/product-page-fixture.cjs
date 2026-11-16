@@ -15,9 +15,12 @@ async function readCommunityPrices(db, { name, packageGtin }) {
   return rows.map(row => ({ ...row, purchase_date: row.purchase_date.toISOString().slice(0, 10) }));
 }
 
-function buildProductPage(t, { userId = null, enabled = true, request, personalReceipts = [] }) {
-  const dom = new JSDOM(read('public/products.html'), {
-    url: 'https://basketpilot.test/products.html',
+function buildProductPage(t, {
+  userId = null, enabled = true, request, fetchPrice, personalReceipts = [],
+  pageUrl = 'https://basketpilot.test/products.html', html = read('public/products.html')
+}) {
+  const dom = new JSDOM(html, {
+    url: pageUrl,
     runScripts: 'outside-only'
   });
   t.after(() => dom.window.close());
@@ -34,10 +37,12 @@ function buildProductPage(t, { userId = null, enabled = true, request, personalR
   for (const script of window.document.querySelectorAll('script[src]:not([type])')) {
     window.eval(read('public' + script.getAttribute('src')));
   }
-  const handleRequest = createCommunityPriceHandler(request);
+  const handleRequest = request && createCommunityPriceHandler(request);
   window.fixture.community = createCommunityLookup(byId('community-results'), {
-    request: input => requestCommunityPrices(input, (url, options) =>
-      handleRequest(new Request(new URL(url, window.location), options))),
+    request: input => requestCommunityPrices(input, (url, options) => {
+      const target = new URL(url, window.location);
+      return fetchPrice ? fetchPrice(target, options) : handleRequest(new Request(target, options));
+    }),
     normalizeBarcode: window.BasketPilotProductLookup.normalizeBarcode,
     retailerNames: { sams: "Sam's Club", costco: 'Costco' }
   });

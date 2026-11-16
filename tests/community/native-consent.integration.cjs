@@ -3,6 +3,7 @@ const { execFileSync, spawn } = require('node:child_process');
 const { randomBytes, randomUUID } = require('node:crypto');
 const { once } = require('node:events');
 const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { request: sendHttp } = require('node:http');
 const { createServer } = require('node:net');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
@@ -11,14 +12,16 @@ const { setTimeout: wait } = require('node:timers/promises');
 const { AuthClient } = require('@supabase/supabase-js');
 const { Pool } = require('pg');
 const { buildProductPage } = require('./product-page-fixture.cjs');
-const { createSupabaseReceiptConsentHandler } = require('../../supabase/drafts/supabase-receipt-consent.mjs');
+const { createCommunityGateway } = require('../../supabase/drafts/community-gateway.mjs');
+const { consentPath, searchPath } = require('../../supabase/drafts/community-price-transport.mjs');
 
 const read = file => readFileSync(path.join(__dirname, '../..', file), 'utf8');
 const secret = () => randomBytes(24).toString('hex');
 const loopback = '127.0.0.1';
 const programs = [];
 const pools = [];
-let scratch, admin, consentPool, guestPool, authUrl, handle, transactionCount = 0;
+let scratch, admin, consentPool, guestPool, authUrl, gateway, gatewayOrigin;
+let authCount = 0, transactionCount = 0, lookupCount = 0;
 
 async function freePort() {
   const server = createServer();
@@ -138,8 +141,34 @@ before(async () => {
 
   consentPool = addPool(pgPort, 'consent_fixture', consentPassword);
   guestPool = addPool(pgPort, 'guest_fixture', guestPassword);
-  handle = createSupabaseReceiptConsentHandler({
-    auth: authClient(),
+  const gatewayPort = await freePort();
+  gatewayOrigin = 'http://' + loopback + ':' + gatewayPort;
+  const pages = new Map(['/products.html', '/receipts.html'].map(url => [url, read('public' + url)]));
+  const verifier = authClient();
+  gateway = createCommunityGateway({
+    origin: gatewayOrigin,
+    auth: {
+      getUser(token) {
+        authCount++;
+        return verifier.getUser(token);
+      }
+    },
+    servePage(request, response, pathname) {
+      if (request.method !== 'GET' || !pages.has(pathname)) return false;
+      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      response.end(pages.get(pathname));
+      return true;
+    },
+    async lookup({ name, packageGtin }) {
+      lookupCount++;
+      const { rows } = await guestPool.query(
+        `select retailer, receipt_item_code, package_name, package_gtin, store_id, location_name,
+          purchase_date::text, package_price_cents
+         from receipt_community.search_package_prices($1, $2)`,
+        [name, packageGtin]
+      );
+      return rows;
+    },
     database: {
       async transaction(run) {
         transactionCount++;
@@ -158,9 +187,12 @@ before(async () => {
       }
     }
   });
+  gateway.listen(gatewayPort, loopback);
+  await once(gateway, 'listening');
 });
 
 after(async () => {
+  if (gateway?.listening) await new Promise(resolve => gateway.close(resolve));
   await Promise.all(pools.map(pool => pool.end()));
   for (const child of programs) {
     if (child.exitCode === null && child.signalCode === null && child.pid) {
@@ -183,11 +215,11 @@ async function createShopper(label) {
 }
 
 function send(token, receiptId, action, fields = {}) {
-  return handle(new Request('http://basketpilot.test/api/receipt-community/consent', {
+  return fetch(gatewayOrigin + consentPath, {
     method: 'POST',
-    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', Origin: gatewayOrigin },
     body: JSON.stringify({ receiptId, action, ...fields })
-  }));
+  });
 }
 
 async function assertPoolReset() {
@@ -220,15 +252,18 @@ test('native Auth and pooled PostgreSQL preserve owner-only consent through conc
     [randomUUID(), receiptId]
   );
 
+  const pageUrl = gatewayOrigin + '/products.html';
+  const page = await fetch(pageUrl);
+  assert.equal(page.status, 200);
+  assert.equal((await fetch(gatewayOrigin + '/receipts.html')).status, 200);
   const guest = buildProductPage(t, {
-    async request({ name, packageGtin }) {
-      const { rows } = await guestPool.query(
-        `select retailer, receipt_item_code, package_name, package_gtin, store_id, location_name,
-          purchase_date::text, package_price_cents
-         from receipt_community.search_package_prices($1, $2)`,
-        [name, packageGtin]
-      );
-      return rows;
+    pageUrl,
+    html: await page.text(),
+    async fetchPrice(url, options) {
+      assert.equal(url.origin, gatewayOrigin);
+      const reply = await fetch(url, options);
+      assert.equal(reply.headers.get('Cache-Control'), 'no-store');
+      return reply;
     }
   });
   const guestStatus = guest.byId('community-status');
@@ -243,6 +278,7 @@ test('native Auth and pooled PostgreSQL preserve owner-only consent through conc
 
   const status = await send(owner.token, receiptId, 'status');
   assert.equal(status.status, 200);
+  assert.equal(status.headers.get('Cache-Control'), 'no-store');
   const preview = await status.json();
   assert.equal(preview.observation_count, 0);
   assert.equal(preview.price_rows[0].package_price_cents, 1000);
@@ -262,7 +298,6 @@ test('native Auth and pooled PostgreSQL preserve owner-only consent through conc
     'Guest lookup with shared price', () => guestStatus.textContent);
   assert.equal(guestPrices.querySelectorAll('li').length, 1);
   assert.match(guestPrices.textContent, /Synthetic club.*Purchased Nov 10, 2024.*[$]10[.]00 per package/);
-
 
   const denied = await send(other.token, receiptId, 'withdraw', { revision });
   assert.equal(denied.status, 403);
@@ -286,4 +321,68 @@ test('native Auth and pooled PostgreSQL preserve owner-only consent through conc
   }
   assert.equal(transactionCount, beforeAuthRejects);
   await assertPoolReset();
+});
+
+
+function postChunked(url) {
+  return new Promise((resolve, reject) => {
+    const request = sendHttp(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, response => {
+      response.resume();
+      response.on('end', () => resolve(response));
+    });
+    request.on('error', reject);
+    request.write(' '.repeat(700));
+    request.end(' '.repeat(400));
+  });
+}
+
+test('the isolated gateway rejects foreign origins and oversized bodies before invoking either route', async () => {
+  const before = { auth: authCount, consent: transactionCount, guest: lookupCount };
+  for (const route of [consentPath, searchPath]) {
+    const url = gatewayOrigin + route;
+    const foreign = await fetch(url, {
+      method: 'POST',
+      headers: { Origin: 'https://example.test', 'Content-Type': 'application/json', Authorization: 'Bearer unused' },
+      body: route === searchPath ? '{"name":"Oats"}' : JSON.stringify({ receiptId: randomUUID(), action: 'status' })
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal(foreign.headers.get('Cache-Control'), 'no-store');
+    assert.equal(foreign.headers.get('Access-Control-Allow-Origin'), null);
+    await foreign.arrayBuffer();
+
+    const tooLarge = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: ' '.repeat(1025)
+    });
+    assert.equal(tooLarge.status, 413);
+    assert.equal(tooLarge.headers.get('Cache-Control'), 'no-store');
+    await tooLarge.arrayBuffer();
+
+    const streamed = await postChunked(url);
+    assert.equal(streamed.statusCode, 413);
+    assert.equal(streamed.headers['cache-control'], 'no-store');
+
+    const wrongMethod = await fetch(url);
+    assert.equal(wrongMethod.status, 405);
+    assert.equal(wrongMethod.headers.get('Allow'), 'POST');
+    await wrongMethod.arrayBuffer();
+  }
+
+  const unknown = await fetch(gatewayOrigin + '/api/unknown');
+  assert.equal(unknown.status, 404);
+  assert.equal(unknown.headers.get('Cache-Control'), 'no-store');
+  await unknown.arrayBuffer();
+  const hostStatus = await new Promise((resolve, reject) => {
+    const request = sendHttp(gatewayOrigin + '/products.html', {
+      headers: { Host: 'outside.example.test' }
+    }, response => {
+      response.resume();
+      response.on('end', () => resolve(response.statusCode));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+  assert.equal(hostStatus, 403);
+  assert.deepEqual({ auth: authCount, consent: transactionCount, guest: lookupCount }, before);
 });
