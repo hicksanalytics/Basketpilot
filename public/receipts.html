@@ -211,7 +211,13 @@ $('receipt-camera').addEventListener('change',receiveReceiptPhoto);
 for(const label of document.querySelectorAll('.photo-actions label[tabindex]')){
  label.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$(label.htmlFor).click();}});
 }
-$('scan').addEventListener('click',scan);$('sample').addEventListener('click',()=>{reset();sampleMode=true;$('receipt-text').value=sample;parse();});$('parse').addEventListener('click',()=>{reset();parse();});$('confirmed').addEventListener('change',toggleExports);$('store').addEventListener('change',()=>{if(parsed){const products=$('items');products.replaceChildren();for(const row of parsed.items)lineEditor(row,products,false);updateSummary();}toggleExports();});$('purchase-date').addEventListener('change',toggleExports);$('export-csv').addEventListener('click',()=>exportFile('csv'));$('export-json').addEventListener('click',()=>exportFile('json'));$('clear').addEventListener('click',()=>{clean();reset();sampleMode=false;$('receipt-text').value='';$('progress-section').classList.add('hidden');});
+$('scan').addEventListener('click',scan);$('sample').addEventListener('click',()=>{reset();sampleMode=true;$('receipt-text').value=sample;parse();});$('parse').addEventListener('click',()=>{reset();parse();});$('confirmed').addEventListener('change',toggleExports);
+$('store').addEventListener('change',()=>{
+ $('store-id').value='';
+ if(parsed){const products=$('items');products.replaceChildren();for(const row of parsed.items)lineEditor(row,products,false);updateSummary();}
+ toggleExports();
+});
+$('purchase-date').addEventListener('change',toggleExports);$('export-csv').addEventListener('click',()=>exportFile('csv'));$('export-json').addEventListener('click',()=>exportFile('json'));$('clear').addEventListener('click',()=>{clean();reset();sampleMode=false;$('receipt-text').value='';$('progress-section').classList.add('hidden');});
 })();
 </script>
 <script type="module" src="/receipt-cloud.js"></script>

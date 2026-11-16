@@ -4,6 +4,48 @@ test('Costco item IDs and totals',()=>{
  const r=p.parseReceipt('COSTCO\n1798799 KIRKLAND PAPER TOWELS 19.99\n1798790 MILK 4.99\nSUBTOTAL 24.98\nTAX 0.00\nTOTAL 24.98\n11/14/2026');
  assert.equal(r.retailer,'costco');assert.equal(r.items.length,2);assert.equal(r.items[0].sku,'1798799');assert.equal(r.subtotalDelta,0);assert.equal(r.purchasedOn,'2026-11-14');
 });
+test('receipt prefix parsing stays Costco-specific and preserves the printed digits',()=>{
+ const row='E 0782796 WATER 4.25 A';
+ assert.equal(p.parseReceipt('COSTCO\n'+row).items[0].sku,'0782796');
+ assert.equal(p.parseReceipt("SAM'S CLUB\n"+row).items[0].sku,'');
+ assert.equal(p.parseReceipt('COSTCO\nE 7827960 WATER 4.25').items[0].sku,'7827960');
+ assert.equal(p.parseReceipt('COSTCO\nE 7827961A WATER 4.25').items[0].sku,'');
+});
+test('Costco warehouse extraction uses the explicit header and register footer',()=>{
+ const header=['COSTCO WHOLESALE','Brentwood #386','98 Seaboard Ln','Brentwood, TN 37027'].join('\n');
+ const rows='\nE 782796 WATER 4.25 A\nSUBTOTAL 4.25\n';
+ const footer='Whse:386 Trm:7 Trn:32 OP:113';
+ assert.equal(p.parseReceipt(header+rows).storeId,'386');
+ assert.equal(p.parseReceipt(header+rows+footer).storeId,'386');
+ assert.equal(p.parseReceipt('COSTCO WHOLESALE'+rows+footer).storeId,'386');
+ assert.equal(p.parseReceipt(header.replace('#386','#0386')+rows).storeId,'0386');
+ assert.equal(p.parseReceipt(header+rows+'Whse:1785 Trm:7 Trn:32 OP:113').storeId,'');
+ assert.equal(p.parseReceipt('COSTCO WHOLESALE'+rows+footer+'\nWhse:1785').storeId,'');
+});
+test('Costco warehouse extraction leaves address-only and unrelated receipt numbers blank',()=>{
+ const rows='\nE 782796 WATER 4.25 A\nSUBTOTAL 4.25\n';
+ for(const text of [
+   'COSTCO WHOLESALE\n98 Seaboard Ln\nBrentwood, TN 37027'+rows+'OP#: 386',
+   'COSTCO WHOLESALE\nOP #386'+rows,
+   'COSTCO WHOLESALE'+rows+'Whse:3860X',
+   'COSTCO WHOLESALE'+rows+'Whse:386.00',
+   'COSTCO WHOLESALE'+rows+'Whse:000',
+   "SAM'S CLUB"+rows+'Whse:386'
+ ]) assert.equal(p.parseReceipt(text).storeId,'');
+});
+test('Costco inline quantity keeps the exact item number when the printed prices reconcile',()=>{
+ const r=p.parseReceipt('COSTCO\n2 @ 4.25 E 782796 WATER 8.50 A\n3 @ $9.50 1068080 ORGANIC EGGS 28.50\nSUBTOTAL 37.00');
+ assert.deepEqual(r.items.map(({sku,description,quantity,lineTotal,unitPrice})=>[sku,description,quantity,lineTotal,unitPrice]),[
+  ['782796','WATER',2,8.50,4.25],['1068080','ORGANIC EGGS',3,28.50,9.50]
+ ]);
+ assert.equal(r.subtotalDelta,0);
+});
+test('Costco inline quantity leaves an ambiguous amount or item code for review',()=>{
+ const r=p.parseReceipt('COSTCO\n2 @ 4.25 E 782796 WATER 7.50 A\n2 @ 4.25 WATER 8.50\nSUBTOTAL 16.00');
+ assert.deepEqual(r.items.map(({sku,lineTotal})=>[sku,lineTotal]),[['',7.50],['',8.50]]);
+ assert.equal(r.subtotalDelta,0);
+ assert.equal(p.parseReceipt("SAM'S CLUB\n2 @ 4.25 E 782796 WATER 8.50").items[0].sku,'');
+});
 test('Publix BOGO is kept separate, not assigned as an everyday price',()=>{
  const r=p.parseReceipt('PUBLIX\nRAOS MARINARA 8.99\nRAOS MARINARA 8.99\nBOGO SAVINGS -8.99\nSUBTOTAL 8.99\nTOTAL 9.70');
  assert.equal(r.items.length,2);assert.equal(r.discounts.length,1);assert.equal(r.computedNet,8.99);assert.equal(r.subtotalDelta,0);

@@ -14,7 +14,7 @@ const receipt = [
   'SUBTOTAL 8.99'
 ].join('\n');
 
-function openReview() {
+function openReview(text = receipt) {
   class Element {
     constructor() {
       this.value = '';
@@ -48,7 +48,7 @@ function openReview() {
     vm.runInContext(src ? read(src) : source, context, { filename: src || 'receipts.html' });
   }
 
-  node('receipt-text').value = receipt;
+  node('receipt-text').value = text;
   node('parse').dispatch('click');
 
   function find(parent, label) {
@@ -136,6 +136,53 @@ test('malformed retailer item IDs cannot turn into a catalog match', () => {
   assert.equal(sku['aria-invalid'], 'false');
   assert.equal(app.metric('Exact SKU matches'), '1 of 1');
   assert.equal(app.payload.parsed.items[0].sku, '0000385385');
+  app.save();
+  assert.equal(app.saved, 1);
+});
+
+test('Costco review verifies the 40-bottle case and distinct egg packs from the printed item number', () => {
+  const app = openReview([
+    'COSTCO WHOLESALE',
+    '11/14/2026',
+    'E 782796 WATER 4.25 A',
+    'E 1068080 ORG EGGS 9.50',
+    '1068083 ORG EGGS 8.00',
+    '2075900 WATER PALLET 100.00',
+    'SUBTOTAL 121.75'
+  ].join('\n'));
+  assert.equal(app.metric('Exact SKU matches'), '3 of 4');
+  const lines = app.payload.parsed.items;
+  assert.deepEqual(Array.from(lines, line => line.sku), ['782796', '1068080', '1068083', '2075900']);
+  assert.match(lines[0].catalogMatch.title, /40 × 16\.9 fl oz/);
+  assert.match(lines[1].catalogMatch.title, /Pasture-Raised/);
+  assert.match(lines[2].catalogMatch.title, /Free-Range/);
+  assert.equal(lines[3].catalogMatch, null);
+  const itemCode = app.field('items', 'Retailer item ID');
+  app.fill(itemCode, '0782796');
+  assert.equal(app.metric('Exact SKU matches'), '2 of 4');
+  app.fill(itemCode, '782796');
+  app.save();
+  assert.equal(app.saved, 1);
+});
+
+test('Costco review pre-fills the warehouse and requires a fresh location if the retailer changes', () => {
+  const app = openReview([
+    'COSTCO WHOLESALE', 'Brentwood #386', '98 Seaboard Ln', '11/14/2026',
+    '2 @ 4.25 E 782796 WATER 8.50 A', 'SUBTOTAL 8.50', 'Whse:386 Trm:7 Trn:32 OP:113'
+  ].join('\n'));
+  assert.equal(app.payload.storeId, '386');
+  assert.equal(app.metric('Exact SKU matches'), '1 of 1');
+  assert.equal(app.payload.parsed.items[0].sku, '782796');
+  assert.equal(app.payload.parsed.items[0].quantity, 2);
+  assert.equal(app.payload.parsed.items[0].unitPrice, 4.25);
+
+  app.node('store').value = 'sams';
+  app.node('store').dispatch('change');
+  assert.equal(app.payload.storeId, '');
+  assert.equal(app.metric('Exact SKU matches'), '0 of 1');
+  assert.equal(app.payload.valid, true);
+  app.node('store-id').value = '6249';
+  assert.equal(app.payload.storeId, '6249');
   app.save();
   assert.equal(app.saved, 1);
 });

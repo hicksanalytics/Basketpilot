@@ -17,6 +17,9 @@
   function cleanLine(line) {
     return String(line || '').replace(/[\u00a0\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, 180);
   }
+  function receiptLines(text) {
+    return text.split(/\r?\n/).map(cleanLine).filter(Boolean).slice(0, 400);
+  }
   function parseMoney(input) {
     const s = String(input || '').trim();
     if (!/^-?\$?\d{1,5}\.\d{2}-?$/.test(s)) return null;
@@ -57,14 +60,32 @@
     }
     return out;
   }
-  function extractStoreId(text, retailer) {
+  function extractCostcoWarehouse(lines) {
+    const logo = lines.slice(0, 6).findIndex(line => /^COSTCO(?: WHOLESALE)?$/i.test(line));
+    if (logo === -1) return '';
+
+    const candidates = new Set();
+    const name = lines[logo + 1];
+    const address = lines[logo + 2];
+    const header = name?.match(/^[a-z][a-z0-9 .'-]*\s+#\s*(\d{1,4})$/i);
+    if (header && /^\d{1,6}\s+[a-z0-9]/i.test(address || '')) candidates.add(header[1]);
+    for (const line of lines.slice(logo + 1)) {
+      const footer = line.match(/^Whse\s*:\s*(\d{1,4})(?:\s+(?:Trm|Trn|Op)\s*:\s*\d+)*$/i);
+      if (footer) candidates.add(footer[1]);
+    }
+    if (candidates.size !== 1) return '';
+    const [warehouse] = candidates;
+    return /[1-9]/.test(warehouse) ? warehouse : '';
+  }
+  function extractStoreId(text, retailer, lines) {
+    if (retailer === 'costco') return extractCostcoWarehouse(lines ?? receiptLines(String(text || '').slice(0, 70000)));
     if (retailer !== 'sams') return '';
     // Sam's register header: date, time, register transaction, club number, lane.
     const head = String(text || '').slice(0, 1200);
     const m = head.match(/\b\d{1,2}\/\d{1,2}\/\d{2,4}\s+\d{1,2}:\d{2}\s+\d{1,8}\s+(\d{4})\s+\d{1,3}\b/);
     return m ? m[1] : '';
   }
-  function parseLine(line, index) {
+  function parseLine(line, index, retailer) {
     const m=line.match(moneyEnding);
     if(!m) return null;
     const amount=parseMoney(m[2]);
@@ -72,11 +93,18 @@
     let label=cleanLine(m[1]);
     if(!label||label.length<3||controlRE.test(label))return null;
     const isDiscount=discountRE.test(label)||amount<0;
+    // Costco can print the quantity and unit price before the item number.
+    const prefix = retailer === 'costco' && label.match(/^(\d{1,4})\s*@\s*\$?(\d{1,5}\.\d{2})\s+(.+)$/);
+    const printedQuantity = prefix ? Number(prefix[1]) : 0;
+    const inlineQuantity = printedQuantity > 0 && printedQuantity <= 1000
+      && printedQuantity * Math.round(Number(prefix[2]) * 100) === Math.round(Math.abs(amount) * 100);
+    const itemLabel = inlineQuantity ? prefix[3] : label;
     let sku='';
-    const skuMatch=label.match(/^(\d{4,14})\s+(.+)$/);
+    const skuMatch=itemLabel.match(/^(\d{4,14})\s+(.+)$/)
+      || (retailer === 'costco' ? itemLabel.match(/^E\s+(\d{6,7})\s+(.+)$/i) : null);
     if(skuMatch){sku=skuMatch[1];label=cleanLine(skuMatch[2]);}
-    let qty=1;
-    const qtyMatch=label.match(/^(\d+(?:\.\d+)?)\s*[xX@]\s+(.+)$/);
+    let qty=skuMatch && inlineQuantity ? printedQuantity : 1;
+    const qtyMatch=!(skuMatch && inlineQuantity) && label.match(/^(\d+(?:\.\d+)?)\s*[xX@]\s+(.+)$/);
     if(qtyMatch){qty=Number(qtyMatch[1]);label=cleanLine(qtyMatch[2]);}
     if(!label||qty<=0||qty>1000||label.length<2)return null;
     if(/^[\d\W]+$/.test(label))return null;
@@ -95,9 +123,10 @@
   }
   function parseReceipt(text) {
     const raw=String(text||'').slice(0,70000);
-    const lines=raw.split(/\r?\n/).map(cleanLine).filter(Boolean).slice(0,400);
+    const lines=receiptLines(raw);
     const summary=parseSummary(lines);
-    const parsed=lines.map((line,i)=>parseLine(line,i)).filter(Boolean);
+    const retailer=detectRetailer(raw);
+    const parsed=lines.map((line,i)=>parseLine(line,i,retailer)).filter(Boolean);
     const items=parsed.filter(x=>x.kind==='item');
     const discounts=parsed.filter(x=>x.kind==='discount');
     const gross=items.reduce((s,x)=>s+x.lineTotal,0);
@@ -111,8 +140,8 @@
     if(discounts.length) warnings.push('Discounts were detected but NOT allocated to individual products.');
     warnings.push('Product identities are not catalog-verified; do not use these amounts as public store prices.');
     return {
-      retailer:detectRetailer(raw), retailerName:stores[detectRetailer(raw)]||'Unknown retailer',
-      purchasedOn:extractDate(raw), storeId:extractStoreId(raw,detectRetailer(raw)), ...summary, items, discounts, recognizedLines:parsed.length,
+      retailer, retailerName:stores[retailer]||'Unknown retailer',
+      purchasedOn:extractDate(raw), storeId:extractStoreId(raw,retailer,lines), ...summary, items, discounts, recognizedLines:parsed.length,
       sourceLineCount:lines.length, parsedGross:Number(gross.toFixed(2)), parsedDiscounts:Number(savings.toFixed(2)),
       computedNet:net, subtotalDelta:diff, warnings, saved:false, catalogMatched:false,
     };
