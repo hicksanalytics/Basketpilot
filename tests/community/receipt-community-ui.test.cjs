@@ -397,12 +397,15 @@ test('history shows a changed preview and requires a new tap before publishing',
   assert.equal(await countObservations(id), 1);
 });
 
-test('an opt-in on receipt review appears in signed-out product search and a history withdrawal removes it', async t => {
-  const receiptCode = '0000000954';
-  const title = 'Synthetic pantry oats, 52 packets';
+test('an opted-in Quaker 52-packet receipt appears by exact UPC until the owner withdraws it', async t => {
+  const receiptCode = '0000866624';
+  const title = 'Quaker Instant Oatmeal Variety Pack, 52 packets';
+  const upc = '030000561959';
   const price = '13.46';
-  await db.query('insert into receipt_community.verified_packages values ($1,$2,$3,$4)',
-    ['sams', receiptCode, title, 'https://example.com/oats']);
+  // Real package identity with a synthetic receipt, store label, and price.
+  await db.query('insert into receipt_community.verified_packages values ($1,$2,$3,$4,$5,$6)',
+    ['sams', receiptCode, title, 'https://www.samsclub.com/ip/quaker-instant-oatmeal-52-ct-variety-pack/3000056195',
+      '00030000561959', 'https://smartlabel.pepsico.info/030000561959-0003-en-US/index.html']);
   const receiptPage = build(t);
   const productPage = buildProductPage(t, { request: input => readCommunityPrices(db, input) });
   const { byId, window, controls } = receiptPage;
@@ -428,14 +431,13 @@ test('an opt-in on receipt review appears in signed-out product search and a his
 
   const sharedPrices = productPage.byId('community-prices');
   const searchStatus = productPage.byId('community-status');
-  const query = 'pantry oats';
-  productPage.search(query);
+  productPage.search(upc);
   await until(() => searchStatus.textContent.includes('No shared receipt prices'), 'Private save should not appear in guest search');
   assert.equal(sharedPrices.children.length, 0);
   share.click();
   await action(reviewPanel, 'Withdraw shared prices');
 
-  productPage.search(query);
+  productPage.search(upc);
   await until(() => sharedPrices.textContent.includes(price), 'Consented price should appear in guest search');
   assert.equal(sharedPrices.querySelector('h3').textContent, title);
   assert.equal(sharedPrices.querySelector('time').dateTime, '2024-10-27');
@@ -450,7 +452,7 @@ test('an opt-in on receipt review appears in signed-out product search and a his
   (await action(historyPanel, 'Withdraw shared prices')).click();
   await action(historyPanel, 'Check eligible prices');
 
-  productPage.search(query);
+  productPage.search(upc);
   await until(() => searchStatus.textContent.includes('No shared receipt prices'), 'Withdrawal should remove the price from guest search');
   assert.equal(sharedPrices.children.length, 0);
   assert.deepEqual((await db.query('select id from receipts where id = $1', [controls.lastSaved])).rows,

@@ -46,10 +46,10 @@ before(async () => {
       ('sams', '0101', 'Synthetic Franklin Club', 'https://example.com/club'),
       ('costco', '0202', 'Synthetic Brentwood Warehouse', 'https://example.com/warehouse');
     insert into receipt_community.verified_packages values
-      ('sams', '000111', 'Fixture Oats, 24 ct', 'https://example.com/large', '${gtin}'),
-      ('costco', '000111', 'Fixture Oats, 12 ct', 'https://example.com/small', '${otherGtin}'),
-      ('sams', '000333', 'Fixture Oats, 6 ct', 'https://example.com/trial', null),
-      ('sams', '000444', 'Fixture Oats, 48 ct', 'https://example.com/bulk', null);
+      ('sams', '000111', 'Fixture Oats, 24 ct', 'https://example.com/large', '${gtin}', 'https://example.com/large-barcode'),
+      ('costco', '000111', 'Fixture Oats, 12 ct', 'https://example.com/small', '${otherGtin}', 'https://example.com/small-barcode'),
+      ('sams', '000333', 'Fixture Oats, 6 ct', 'https://example.com/trial', null, null),
+      ('sams', '000444', 'Fixture Oats, 48 ct', 'https://example.com/bulk', null, null);
   `);
   await save({ retailer: 'sams', store: '0101', date: '2024-11-10', code: '000111', price: 19.95 });
   await save({ retailer: 'sams', store: '0101', date: '2024-10-03', code: '000111', price: 17.95 });
@@ -111,6 +111,23 @@ test('barcode search uses only the curated exact package barcode and keeps perso
   search(otherUpc);
   await until(() => byId('community-prices').textContent.includes('12 ct'), 'Barcode for smaller package should appear');
   assert.doesNotMatch(byId('community-prices').textContent, /24 ct/);
+});
+
+test('a bottle UPC cannot retrieve a case price and the shopper can switch to name search', async t => {
+  await db.query('insert into receipt_community.verified_packages values ($1,$2,$3,$4)',
+    ['costco', '782796', 'Kirkland Signature Purified Drinking Water, 40 × 16.9 fl oz',
+      'https://www.costcobusinessdelivery.com/kirkland-signature-purified-drinking-water%2C-16.9-fl-oz%2C-40-ct-.product.11982447.html']);
+  await save({ retailer: 'costco', store: '0202', date: '2024-11-10', code: '782796', price: 4.25,
+    privateGtin: '00096619756803' });
+  const { byId, search } = build(t);
+  for (const bottleUpc of ['096619879045', '096619756803']) {
+    search(bottleUpc);
+    await until(() => byId('community-status').textContent.includes('whole pack'), 'Bottle UPC should show the recovery path');
+    assert.equal(byId('community-prices').children.length, 0);
+  }
+  search('purified drinking water');
+  await until(() => byId('community-prices').textContent.includes('40 × 16.9 fl oz'), 'The case should appear by name');
+  assert.match(byId('community-prices').textContent, /\$4\.25 per package/);
 });
 
 test('withdrawal removes a price from a fresh lookup and the response contains no source identifiers', async () => {

@@ -269,8 +269,8 @@ test('package history contains only dated, distinct prices for the exact verifie
 test('holds hide individual prices from name and barcode lookup while preserving withdrawal', async () => {
   const code = '0000000940';
   const gtin = '00012345678905';
-  await db.query('insert into receipt_community.verified_packages values ($1,$2,$3,$4,$5)',
-    ['fixture', code, 'Moderation fixture, 12 ct', 'https://example.com/moderation', gtin]);
+  await db.query('insert into receipt_community.verified_packages values ($1,$2,$3,$4,$5,$6)',
+    ['fixture', code, 'Moderation fixture, 12 ct', 'https://example.com/moderation', gtin, 'https://example.com/moderation-barcode']);
   for (const id of [40, 41]) {
     await addReceipt(id);
     await addItem(id, id * 10, { code });
@@ -328,4 +328,27 @@ test('a hold placed after preview requires approval for the changed list', async
   assert.deepEqual(await observations(42), []);
   assert.equal((await requestConsent(42, 'share', changed.revision, changed.preview_token)).outcome, 'shared');
   assert.deepEqual((await observations(42)).map(row => row.receipt_item_id), [itemId(421)]);
+});
+
+test('curated barcode entries require a valid normalized GTIN and an evidence link', async () => {
+  const insert = (gtin, evidence) => db.query(
+    'insert into receipt_community.verified_packages values ($1,$2,$3,$4,$5,$6)',
+    ['fixture', '0000000948', 'Barcode evidence fixture', 'https://example.com/package', gtin, evidence]
+  );
+  const source = 'https://example.com/pack-barcode';
+  for (const [gtin, evidence] of [
+    ['00030000561959', null],
+    ['00030000561959', 'http://example.com/pack-barcode'],
+    ['00030000561959', 'https://'],
+    ['00030000561958', source],
+    ['030000561959', source],
+    ['0003000056x959', source],
+    ['00000000000000', source],
+    [null, source]
+  ]) {
+    await assert.rejects(insert(gtin, evidence), { code: '23514', constraint: 'verified_packages_barcode_evidence' });
+  }
+  await insert('00030000561959', source);
+  const { rows } = await db.query("select package_gtin from receipt_community.verified_packages where receipt_item_code = '0000000948'");
+  assert.deepEqual(rows, [{ package_gtin: '00030000561959' }]);
 });

@@ -62,7 +62,9 @@ export function createCommunityLookup(root, { request, normalizeBarcode, retaile
       const rows = await request({ name: isBarcode ? null : query, packageGtin: gtin });
       if (id !== lastRequest) return;
       render(rows);
-      status.textContent = rows.length ? '' : 'No shared receipt prices found for this search.';
+      status.textContent = rows.length ? '' : isBarcode
+        ? 'No shared receipt prices found for this barcode. Try the barcode on the whole pack, or search by product name.'
+        : 'No shared receipt prices found for this search.';
     } catch {
       if (id !== lastRequest) return;
       results.replaceChildren();

@@ -12,12 +12,39 @@ create table receipt_community.verified_stores (
   primary key (retailer, store_id)
 );
 
+-- The canonical representation is 14 digits, with leading zeroes for UPC-A
+-- and EAN. Validate the GS1 check digit before enabling barcode lookup.
+create function receipt_community.valid_package_gtin(p_gtin text)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $function$
+  select case when p_gtin ~ '^[0-9]{14}$' and p_gtin <> '00000000000000'
+    then (
+      select sum(substr(p_gtin, n, 1)::integer * case when n % 2 = 1 then 3 else 1 end) % 10 = 0
+      from generate_series(1, 14) as digits(n)
+    )
+    else false
+  end
+$function$;
+
+revoke all on function receipt_community.valid_package_gtin(text) from public, anon, authenticated;
+
 create table receipt_community.verified_packages (
   retailer text not null,
   receipt_item_code text not null,
   package_name text not null,
   evidence_url text not null,
-  package_gtin text check (package_gtin ~ '^[0-9]{14}$'),
+  package_gtin text,
+  barcode_evidence_url text,
+  constraint verified_packages_barcode_evidence check (
+    (package_gtin is null and barcode_evidence_url is null)
+    or (
+      receipt_community.valid_package_gtin(package_gtin)
+      and (barcode_evidence_url ~ '^https://[^[:space:]]+$') is true
+    )
+  ),
   primary key (retailer, receipt_item_code)
 );
 
