@@ -216,3 +216,19 @@ test('price lookup keeps a quieter store visible and groups older prices behind 
   await until(() => prices.querySelectorAll('.community-store').length === 1, 'A withdrawn observation should disappear');
   assert.doesNotMatch(prices.textContent, /Synthetic Quiet Club/);
 });
+
+test('a temporary lookup failure leaves guest search available for a retry', async t => {
+  let available = false;
+  const { byId, search } = build(t, {
+    request: input => {
+      if (!available) throw new Error('Synthetic connection failure');
+      return packagePrices(input);
+    }
+  });
+  search(upc);
+  await until(() => byId('community-status').textContent.includes('Try searching again'), 'Guest should see a retry message');
+  assert.equal(byId('community-prices').children.length, 0);
+  available = true;
+  search(upc);
+  await until(() => byId('community-prices').textContent.includes('24 ct'), 'Retry should find the verified package');
+});

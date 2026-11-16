@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM } = require('jsdom');
 const { createCommunityLookup } = require('../../supabase/drafts/community-product-lookup.mjs');
+const { createCommunityPriceHandler, requestCommunityPrices } = require('../../supabase/drafts/community-price-transport.mjs');
 
 const read = file => fs.readFileSync(path.join(__dirname, '../..', file), 'utf8');
 
@@ -33,8 +34,10 @@ function buildProductPage(t, { userId = null, enabled = true, request, personalR
   for (const script of window.document.querySelectorAll('script[src]:not([type])')) {
     window.eval(read('public' + script.getAttribute('src')));
   }
+  const handleRequest = createCommunityPriceHandler(request);
   window.fixture.community = createCommunityLookup(byId('community-results'), {
-    request,
+    request: input => requestCommunityPrices(input, (url, options) =>
+      handleRequest(new Request(new URL(url, window.location), options))),
     normalizeBarcode: window.BasketPilotProductLookup.normalizeBarcode,
     retailerNames: { sams: "Sam's Club", costco: 'Costco' }
   });

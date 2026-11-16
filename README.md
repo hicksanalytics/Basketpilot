@@ -54,6 +54,8 @@ The tests run the receipt and product pages in a simulated browser DOM with a sy
 
 The fixture runs guest lookups under the `receipt_community_reader` database role. It can read the shared price projection and run the bounded search. Its view contains the retailer, verified package and location, purchase date, and price. A future backend can use a dedicated server connection with that role after approval.
 
+The guest fixture also runs requests through the draft `POST /api/community-prices/search` handler. It accepts a short product name or a normalized package GTIN in a JSON body and returns only the shared price fields. The browser request omits credentials and the response uses `Cache-Control: no-store`. The draft module stays outside the public site directory.
+
 ## Future work
 
 - Add explicit receipt-image privacy controls and straightforward account onboarding.
