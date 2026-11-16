@@ -286,7 +286,7 @@ grant execute on function receipt_community.set_consent(uuid, text, integer, tex
 
 -- Use one visibility rule for both candidate selection and returned history.
 create view receipt_community.visible_observations as
-select o.retailer, o.store_id, o.receipt_item_code, o.purchase_date, o.package_price_cents
+select distinct o.retailer, o.store_id, o.receipt_item_code, o.purchase_date, o.package_price_cents
 from receipt_community.observations o
 where not exists (
   select 1 from receipt_community.observation_holds h where h.receipt_item_id = o.receipt_item_id
@@ -308,7 +308,7 @@ language sql
 stable
 set search_path = ''
 as $function$
-  select distinct o.retailer, o.receipt_item_code, p.package_name, o.store_id,
+  select o.retailer, o.receipt_item_code, p.package_name, o.store_id,
     s.location_name, o.purchase_date, o.package_price_cents
   from receipt_community.visible_observations o
   join receipt_community.verified_packages p
@@ -337,7 +337,7 @@ stable
 set search_path = ''
 as $function$
   with matched as (
-    select p.retailer, p.receipt_item_code, p.package_gtin
+    select p.retailer, p.receipt_item_code, p.package_name, p.package_gtin
     from receipt_community.verified_packages p
     where (
       (p_name is null and p_package_gtin ~ '^[0-9]{14}$' and p.package_gtin = p_package_gtin)
@@ -351,15 +351,21 @@ as $function$
     order by p.package_name, p.retailer, p.receipt_item_code
     limit 12
   )
-  select h.retailer, h.receipt_item_code, h.package_name, m.package_gtin, h.store_id,
-    h.location_name, h.purchase_date, h.package_price_cents
+  select m.retailer, m.receipt_item_code, m.package_name, m.package_gtin, h.store_id,
+    s.location_name, h.purchase_date, h.package_price_cents
   from matched m
   cross join lateral (
-    select * from receipt_community.package_price_history(m.retailer, m.receipt_item_code) h
-    order by h.purchase_date desc, h.store_id, h.package_price_cents
+    select o.store_id, o.purchase_date, o.package_price_cents
+    from receipt_community.visible_observations o
+    where o.retailer = m.retailer and o.receipt_item_code = m.receipt_item_code
+    -- Keep one recent observation per store before adding earlier receipts.
+    order by (
+      row_number() over (partition by o.store_id order by o.purchase_date desc, o.package_price_cents) = 1
+    ) desc, o.purchase_date desc, o.store_id, o.package_price_cents
     limit 10
   ) h
-  order by h.package_name, h.retailer, h.receipt_item_code, h.purchase_date desc,
+  join receipt_community.verified_stores s on s.retailer = m.retailer and s.store_id = h.store_id
+  order by m.package_name, m.retailer, m.receipt_item_code, h.purchase_date desc,
     h.store_id, h.package_price_cents
 $function$;
 

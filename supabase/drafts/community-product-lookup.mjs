@@ -14,6 +14,37 @@ export function createCommunityLookup(root, { request, normalizeBarcode, retaile
     return node;
   }
 
+  function renderPrices(parent, prices) {
+    const list = append(parent, 'ul', '', 'price-list');
+    for (const price of prices) {
+      const row = append(list, 'li', '', 'price-row');
+      const purchaseDate = date.format(new Date(price.purchase_date + 'T00:00:00Z'));
+      const time = append(row, 'time', 'Purchased ' + purchaseDate, 'price-meta');
+      time.dateTime = price.purchase_date;
+      append(row, 'span', money.format(price.package_price_cents / 100) + ' per package');
+    }
+  }
+
+  function renderStores(card, prices) {
+    const stores = new Map();
+    for (const price of prices) {
+      if (!stores.has(price.store_id)) stores.set(price.store_id, []);
+      stores.get(price.store_id).push(price);
+    }
+    for (const history of stores.values()) {
+      const latest = history[0];
+      const store = append(card, 'div', '', 'community-store');
+      append(store, 'h4', latest.location_name);
+      renderPrices(store, history.filter(price => price.purchase_date === latest.purchase_date));
+      const older = history.filter(price => price.purchase_date < latest.purchase_date);
+      if (older.length) {
+        const details = append(store, 'details');
+        append(details, 'summary', 'Earlier receipts');
+        renderPrices(details, older);
+      }
+    }
+  }
+
   function render(rows) {
     const packages = new Map();
     for (const row of rows) {
@@ -27,16 +58,7 @@ export function createCommunityLookup(root, { request, normalizeBarcode, retaile
       const card = append(results, 'article', '', 'product');
       append(card, 'h3', pkg.package_name);
       append(card, 'p', retailer + ' item #' + pkg.receipt_item_code, 'muted');
-      const list = append(card, 'ul', '', 'price-list');
-      for (const price of prices) {
-        const row = append(list, 'li', '', 'price-row');
-        const location = append(row, 'div');
-        append(location, 'strong', price.location_name);
-        const purchaseDate = date.format(new Date(price.purchase_date + 'T00:00:00Z'));
-        const time = append(location, 'time', 'Purchased ' + purchaseDate, 'price-meta');
-        time.dateTime = price.purchase_date;
-        append(row, 'span', money.format(price.package_price_cents / 100) + ' per package');
-      }
+      renderStores(card, prices);
     }
   }
 

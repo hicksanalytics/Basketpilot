@@ -171,3 +171,47 @@ test('the published configuration keeps community lookup dormant', async t => {
   assert.equal(byId('community-results').hidden, true);
   assert.match(byId('search-status').textContent, /Sign in to see your receipt matches/);
 });
+
+test('price lookup keeps a quieter store visible and groups older prices behind a disclosure', async t => {
+  const code = '000990';
+  const title = 'Fixture pantry oil, 24 fl oz';
+  await db.query('insert into receipt_community.verified_stores values ($1,$2,$3,$4)',
+    ['sams', '0102', 'Synthetic Quiet Club', 'https://example.com/quiet-club']);
+  await db.query('insert into receipt_community.verified_packages values ($1,$2,$3,$4)',
+    ['sams', code, title, 'https://example.com/pantry-oil']);
+  const purchase = (store, date, price) => save({ retailer: 'sams', store, date, code, price });
+  const quieter = await purchase('0102', '2024-08-01', 13.75);
+  for (let day = 1; day <= 52; day++) {
+    const date = new Date(Date.UTC(2024, 8, day)).toISOString().slice(0, 10);
+    await purchase('0101', date, 16);
+  }
+  await purchase('0101', '2024-11-01', 15.99);
+  await purchase('0101', '2024-11-01', 15.99);
+  await purchase('0101', '2024-11-01', 16.49);
+
+  const query = 'pantry oil';
+  const rows = await packagePrices({ name: query, packageGtin: null });
+  assert.equal(rows.length, 10);
+  assert.deepEqual([...new Set(rows.map(row => row.store_id))], ['0101', '0102']);
+  assert.deepEqual(rows.filter(row => row.purchase_date === '2024-11-01').map(row => row.package_price_cents), [1599, 1649]);
+
+  const { byId, search } = build(t);
+  const prices = byId('community-prices');
+  search(query);
+  await until(() => prices.querySelectorAll('.community-store').length === 2, 'Both stores should be visible');
+  const [busyStore, quietStore] = prices.querySelectorAll('.community-store');
+  assert.equal(busyStore.querySelector('h4').textContent, 'Synthetic Franklin Club');
+  assert.deepEqual([...busyStore.querySelectorAll(':scope > ul time')].map(time => time.dateTime), ['2024-11-01', '2024-11-01']);
+  assert.match(quietStore.textContent, /Synthetic Quiet Club.*Purchased Aug 1, 2024.*\$13\.75 per package/);
+  const earlier = busyStore.querySelector('details');
+  assert.equal(earlier.open, false);
+  assert.equal(earlier.querySelector('summary').textContent, 'Earlier receipts');
+  earlier.querySelector('summary').click();
+  assert.equal(earlier.open, true);
+  assert.equal(earlier.querySelector('time').dateTime, '2024-10-22');
+
+  await consent(quieter, 'withdraw', 1);
+  search(query);
+  await until(() => prices.querySelectorAll('.community-store').length === 1, 'A withdrawn observation should disappear');
+  assert.doesNotMatch(prices.textContent, /Synthetic Quiet Club/);
+});
