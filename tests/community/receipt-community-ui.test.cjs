@@ -619,6 +619,84 @@ test('an opted-in Quaker 52-packet receipt appears by exact UPC until the owner 
     [{ id: controls.lastSaved }]);
 });
 
+test('a verified beef-franks barcode shows only opted-in prices at the exact Sam’s clubs', async t => {
+  const fixtureOwner = randomUUID();
+  const code = '0000385385';
+  const title = 'Ball Park Beef Franks, 24 ct, 45 oz';
+  const beefUpc = '054500193243';
+  const classicUpc = '054500193328';
+  const franklin = '6249';
+  const nashville = '8294';
+  const price = '14.29';
+  await db.query('insert into receipt_community.verified_packages values ($1,$2,$3,$4,$5,$6)', [
+    'sams', code, title, 'https://www.samsclub.com/ip/Ball-Park-Beef-Franks-24-ct/13585874752',
+    beefUpc.padStart(14, '0'), 'https://www.bjs.com/product/name/3000000000002531756'
+  ]);
+  for (const [club, name] of [[franklin, 'Franklin'], [nashville, 'Nashville Antioch Pike']]) {
+    await db.query('insert into receipt_community.verified_stores values ($1,$2,$3,$4)', [
+      'sams', club, 'Synthetic ' + name, 'https://www.samsclub.com/club/' + club
+    ]);
+  }
+  const older = await writeReceipt({ owner_id: fixtureOwner, store_id: nashville, purchase_date: '2024-10-19', subtotal: 15.79 });
+  await writeLine({ receipt_id: older, retailer_item_code: code, quantity: 1, gross_line_total: 15.79 });
+  const unknown = await writeReceipt({ owner_id: fixtureOwner, store_id: '9998', purchase_date: '2024-10-18', subtotal: 12.12 });
+  await writeLine({ receipt_id: unknown, retailer_item_code: code, quantity: 1, gross_line_total: 12.12 });
+
+  const { byId, window, controls, requestConsent } = build(t, { fixtureOwner });
+  const guest = buildProductPage(t, { request: input => readCommunityPrices(db, input) });
+  const prices = guest.byId('community-prices');
+  const status = guest.byId('community-status');
+  await until(() => !byId('cloud-signed-in').classList.contains('hidden'), 'Receipt owner should be signed in');
+  byId('receipt-text').value = [
+    "SAM'S CLUB", '10/23/2024 14:05 1047 ' + franklin + ' 07',
+    code + ' PRIVATE BEEF LABEL ' + price, 'SUBTOTAL ' + price, 'TOTAL ' + price
+  ].join('\n');
+  byId('parse').click();
+  const payload = window.BasketPilotReceiptBridge.getPayload();
+  assert.equal(payload.storeId, franklin);
+  assert.equal(payload.parsed.items[0].sku, code);
+  byId('quick-save').click();
+  await until(() => !byId('review-community').hidden, 'The Franklin preview should appear');
+  const reviewPanel = panelIn(byId('review-community'));
+  const share = await action(reviewPanel, 'Share 1 item price');
+  assert.match(reviewPanel.querySelector('li').textContent, /Ball Park Beef Franks.*Synthetic Franklin.*per package/);
+  assert.equal(reviewPanel.querySelector('time').dateTime, '2024-10-23');
+
+  guest.search(beefUpc);
+  await until(() => status.textContent.includes('No shared receipt prices'), 'Saved receipts should remain private');
+  assert.equal(prices.children.length, 0);
+  assert.deepEqual((await requestConsent(unknown, 'status')).exclusion_counts, { store_unverified: 1 });
+
+  const olderCard = () => [...byId('cloud-history').children].find(card => card.textContent.includes('2024-10-19'));
+  await until(olderCard, 'Previously saved Nashville receipt should be in history');
+  const olderPanel = panelIn(olderCard());
+  olderPanel.querySelector('summary').click();
+  (await action(olderPanel, 'Share 1 item price')).click();
+  await action(olderPanel, 'Withdraw shared prices');
+  share.click();
+  await action(reviewPanel, 'Withdraw shared prices');
+
+  guest.search(beefUpc);
+  await until(() => prices.querySelectorAll('.community-store').length === 2, 'Both opted-in club prices should appear');
+  assert.equal(prices.querySelector('h3').textContent, title);
+  assert.deepEqual([...prices.querySelectorAll('h4')].map(el => el.textContent), ['Synthetic Franklin', 'Synthetic Nashville Antioch Pike']);
+  assert.deepEqual([...prices.querySelectorAll('time')].map(el => el.dateTime), ['2024-10-23', '2024-10-19']);
+  assert.match(prices.textContent, /[$]14[.]29 per package.*[$]15[.]79 per package/);
+  assert.doesNotMatch(prices.textContent, /PRIVATE BEEF LABEL|[$]12[.]12/);
+
+  guest.search(classicUpc);
+  await until(() => status.textContent.includes('No shared receipt prices'), 'The same-count Classic UPC must not return the beef price');
+  assert.equal(prices.children.length, 0);
+
+  (await action(reviewPanel, 'Withdraw shared prices')).click();
+  await action(reviewPanel, 'Check eligible prices');
+  guest.search(beefUpc);
+  await until(() => prices.textContent.includes('Synthetic Nashville Antioch Pike'), 'The remaining club should still appear');
+  assert.doesNotMatch(prices.textContent, /Synthetic Franklin|[$]14[.]29/);
+  assert.deepEqual((await db.query('select id from receipts where id = $1', [controls.lastSaved])).rows,
+    [{ id: controls.lastSaved }]);
+});
+
 async function seedOlderHistory(fixtureOwner) {
   const timestamp = '2024-12-01T12:00:00.123456+00:00';
   const newest = await writeReceipt({ owner_id: fixtureOwner,
