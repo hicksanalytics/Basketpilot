@@ -6,6 +6,7 @@ const { before, after, test } = require('node:test');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { PGlite } = require('@electric-sql/pglite');
 const { JSDOM } = require('jsdom');
+const { createReceiptConsentHandler, requestReceiptConsent } = require('../../supabase/drafts/community-price-transport.mjs');
 const { buildProductPage, readCommunityPrices } = require('./product-page-fixture.cjs');
 
 const read = file => fs.readFileSync(path.join(__dirname, '../..', file), 'utf8');
@@ -77,7 +78,8 @@ function build(t, { sharing = true, signedIn = true, fixtureOwner = owner } = {}
 
   const fixtureUser = { id: fixtureOwner, email: 'fixture@example.test' };
   let user = signedIn ? fixtureUser : null;
-  const controls = { operations: [], lastSaved: null, loseShareResponse: false, beforeLines: null, beforeHistory: null, beforeDuplicate: null };
+  const accessToken = 'fixture-token-' + fixtureOwner;
+  const controls = { operations: [], sessionExpired: false, lastSaved: null, loseShareResponse: false, beforeLines: null, beforeHistory: null, beforeDuplicate: null };
   const client = {
     auth: {
       async getUser() { return { data: { user } }; },
@@ -169,16 +171,27 @@ function build(t, { sharing = true, signedIn = true, fixtureOwner = owner } = {}
     }
   };
 
-  window.fixture = {
-    createClient: () => client,
-    community: createReceiptCommunity(async (id, action, revision, token) => {
+  const handleConsent = createReceiptConsentHandler({
+    authenticate: async token => token === accessToken && !controls.sessionExpired ? user : null,
+    async setConsent({ receiptId: id, action, revision, previewToken }, { ownerId }) {
       controls.operations.push({ id, action, revision });
-      const { rows } = await asUser(user?.id, tx => tx.query(
-        'select * from receipt_community.set_consent($1,$2,$3,$4)', [id, action, revision, token]
+      const { rows } = await asUser(ownerId, tx => tx.query(
+        'select * from receipt_community.set_consent($1,$2,$3,$4)', [id, action, revision, previewToken]
       ));
       if (action === 'share' && controls.loseShareResponse) throw new Error('Synthetic lost response');
       return rows[0];
-    })
+    }
+  });
+  const requestConsent = (receiptId, action, revision = null, previewToken = null) => requestReceiptConsent(
+    { receiptId, action, revision, previewToken },
+    {
+      getAccessToken: async () => user ? accessToken : null,
+      fetchConsent: (url, options) => handleConsent(new Request(new URL(url, window.location), options))
+    }
+  );
+  window.fixture = {
+    createClient: () => client,
+    community: createReceiptCommunity(requestConsent)
   };
   for (const script of window.document.querySelectorAll('script:not([type])')) {
     window.eval(script.hasAttribute('src') ? read('public' + script.getAttribute('src')) : script.textContent);
@@ -197,7 +210,7 @@ function build(t, { sharing = true, signedIn = true, fixtureOwner = owner } = {}
     assert.equal(window.BasketPilotReceiptBridge.getPayload().valid, true);
   }
 
-  return { window, byId, controls, review };
+  return { window, byId, controls, review, requestConsent };
 }
 
 function panelIn(parent) {
@@ -267,6 +280,50 @@ test('history can share a previously saved receipt and recover a lost response b
   ]);
   byId('auth-logout').click();
   await until(() => !panel.isConnected && !byId('cloud-auth').classList.contains('hidden'), 'Signing out should remove saved receipt controls');
+});
+
+test('an expired history session cannot share and requires a fresh preview after session renewal', async t => {
+  const id = await writeReceipt({ purchase_date: '2024-11-02' });
+  await writeLine({ receipt_id: id });
+  const { byId, controls } = build(t);
+  const history = byId('cloud-history');
+  const getCard = () => [...history.children].find(card => card.textContent.includes('2024-11-02'));
+  await until(getCard, 'Previously saved receipt should load');
+  const panel = panelIn(getCard());
+  panel.querySelector('summary').click();
+  const share = await action(panel, 'Share 1 item price');
+
+  controls.sessionExpired = true;
+  share.click();
+  const check = await action(panel, 'Check sharing status');
+  assert.match(panel.querySelector('[role=status]').textContent, /Could not confirm sharing status/);
+  assert.equal(panel.querySelectorAll('li').length, 0);
+  assert.equal(await countObservations(id), 0);
+  assert.deepEqual(controls.operations.map(op => op.action), ['status']);
+
+  controls.sessionExpired = false;
+  check.click();
+  const freshShare = await action(panel, 'Share 1 item price');
+  assert.equal(await countObservations(id), 0);
+  freshShare.click();
+  await action(panel, 'Withdraw shared prices');
+  assert.equal(await countObservations(id), 1);
+  assert.deepEqual(controls.operations.map(op => op.action), ['status', 'status', 'share']);
+});
+
+test('a different signed-in owner cannot inspect or change sharing through the receipt endpoint', async t => {
+  const id = await writeReceipt();
+  await writeLine({ receipt_id: id });
+  const { requestConsent: requestAsOwner } = build(t);
+  const { requestConsent: requestAsOther } = build(t, { fixtureOwner: randomUUID() });
+  const preview = await requestAsOwner(id, 'status');
+  const shared = await requestAsOwner(id, 'share', preview.revision, preview.preview_token);
+  assert.equal(shared.observation_count, 1);
+
+  await assert.rejects(requestAsOther(id, 'status'), /sharing status could not be confirmed/);
+  await assert.rejects(requestAsOther(id, 'withdraw', shared.revision), /sharing status could not be confirmed/);
+  assert.equal(await countObservations(id), 1);
+  assert.equal((await requestAsOwner(id, 'status')).revision, shared.revision);
 });
 
 test('edits during an in-flight save cannot attach sharing to the changed review', async t => {
